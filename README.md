@@ -47,6 +47,7 @@ import type { PlayerStatus } from 'mpegts-vue3'
 | `autoplay` | `boolean` | `true` | Auto-play on mount |
 | `isLive` | `boolean` | `true` | Live stream mode |
 | `muted` | `boolean` | `true` | Muted playback |
+| `config` | `Partial<MpegtsConfig>` | `{}` | mpegts.js player config, overrides defaults. See [mpegts.js API](https://github.com/xqq/mpegts.js/blob/master/docs/api.md) |
 
 ### Events
 

@@ -5,19 +5,36 @@ import { onMounted, onUnmounted, ref, watch } from 'vue';
 
 import Mpegts from 'mpegts.js';
 
-import type { PlayerStatus } from '../types';
+import type { MpegtsConfig, PlayerStatus } from '../types';
+
+const DEFAULT_CONFIG: MpegtsConfig = {
+  enableStashBuffer: false,
+  liveBufferLatencyChasing: true,
+  liveBufferLatencyChasingOnPaused: true,
+  liveBufferLatencyMaxLatency: 1.5,
+  liveBufferLatencyMinRemain: 0.3,
+  liveSync: true,
+  liveSyncMaxLatency: 1.2,
+  liveSyncTargetLatency: 0.5,
+  autoCleanupSourceBuffer: true,
+  autoCleanupMaxBackwardDuration: 30,
+  autoCleanupMinBackwardDuration: 10,
+  fixAudioTimestampGap: true,
+};
 
 interface Props {
   src: string;
   autoplay?: boolean;
   isLive?: boolean;
   muted?: boolean;
+  config?: Partial<MpegtsConfig>;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   autoplay: true,
   isLive: true,
   muted: true,
+  config: () => ({}),
 });
 
 const emit = defineEmits<{
@@ -86,26 +103,15 @@ function createPlayer(url: string) {
   status.value = 'connecting';
   emit('status', 'connecting');
 
+  const mergedConfig: MpegtsConfig = { ...DEFAULT_CONFIG, ...props.config };
+
   player = Mpegts.createPlayer(
     {
       type: 'mse',
       isLive: props.isLive,
       url,
     },
-    {
-      enableStashBuffer: false,
-      liveBufferLatencyChasing: true,
-      liveBufferLatencyChasingOnPaused: true,
-      liveBufferLatencyMaxLatency: 1.5,
-      liveBufferLatencyMinRemain: 0.3,
-      liveSync: true,
-      liveSyncMaxLatency: 1.2,
-      liveSyncTargetLatency: 0.5,
-      autoCleanupSourceBuffer: true,
-      autoCleanupMaxBackwardDuration: 30,
-      autoCleanupMinBackwardDuration: 10,
-      fixAudioTimestampGap: true,
-    },
+    mergedConfig,
   );
 
   player.attachMediaElement(videoRef.value);
@@ -152,6 +158,16 @@ watch(
       emit('status', 'nosignal');
     }
   },
+);
+
+watch(
+  () => props.config,
+  () => {
+    if (props.src) {
+      createPlayer(props.src);
+    }
+  },
+  { deep: true },
 );
 
 onMounted(() => {

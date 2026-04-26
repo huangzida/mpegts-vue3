@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, shallowReactive } from 'vue';
+import { computed, reactive, ref } from 'vue';
 
 import { Languages, Monitor } from 'lucide-vue-next';
 
 import { Input, Slider, Switch } from 'antdv-next';
 
 import { MpegtsPlayer } from 'mpegts-vue3';
-import type { PlayerStatus } from 'mpegts-vue3';
+import type { MpegtsConfig, PlayerStatus } from 'mpegts-vue3';
 
 import { t, toggleLocale, useLocale } from './i18n';
 
@@ -59,7 +59,7 @@ const statusText = computed(() => {
   return t(key)
 });
 
-const config = shallowReactive({
+const config: MpegtsConfig = reactive({
   enableStashBuffer: false,
   stashInitialSize: 384,
   liveBufferLatencyChasing: true,
@@ -183,6 +183,7 @@ const gridColsClass = computed(() => {
               :ref="(el: any) => setPlayerRef(0, el)"
               :src="inputUrl"
               :muted="muted"
+              :config="config"
               @status="(s: PlayerStatus) => onPlayerStatus(0, s)"
             />
           </div>
@@ -197,6 +198,7 @@ const gridColsClass = computed(() => {
                 :ref="(el: any) => setPlayerRef(slot.id, el)"
                 :src="inputUrl"
                 :muted="muted"
+                :config="config"
                 @status="(s: PlayerStatus) => onPlayerStatus(slot.id, s)"
               />
             </div>
