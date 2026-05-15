@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { Ref } from 'vue';
 
-import { onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 
 import Mpegts from 'mpegts.js';
 
@@ -27,6 +27,7 @@ interface Props {
   autoplay?: boolean;
   isLive?: boolean;
   muted?: boolean;
+  objectFit?: 'contain' | 'cover' | 'fill' | 'none' | 'scale-down';
   type?: string;
   cors?: boolean;
   withCredentials?: boolean;
@@ -54,6 +55,10 @@ const emit = defineEmits<{
 const videoRef = ref<HTMLVideoElement>() as Ref<HTMLVideoElement>;
 const status = ref<PlayerStatus>('nosignal');
 let player: Mpegts.Player | null = null;
+
+const videoStyle = computed(() => ({
+  objectFit: props.objectFit ?? 'fill',
+}));
 
 function destroyPlayer() {
   if (!player) return;
@@ -232,7 +237,8 @@ onUnmounted(() => {
   <div class="relative w-full h-full bg-black rounded-lg overflow-hidden">
     <video
       ref="videoRef"
-      class="absolute inset-0 w-full h-full object-contain"
+      class="absolute inset-0 w-full h-full"
+      :style="videoStyle"
       @click.prevent
       @contextmenu.prevent
     ></video>

@@ -30,6 +30,7 @@ export interface MpegtsPlayerProps {
   autoplay?: boolean
   isLive?: boolean
   muted?: boolean
+  objectFit?: React.CSSProperties['objectFit']
   type?: string
   cors?: boolean
   withCredentials?: boolean
@@ -54,6 +55,7 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       autoplay = true,
       isLive = true,
       muted = true,
+      objectFit = 'fill',
       type = 'mse',
       cors,
       withCredentials,
@@ -195,7 +197,7 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       inset: 0,
       width: '100%',
       height: '100%',
-      objectFit: 'contain',
+      objectFit,
     }
 
     const overlayBase: React.CSSProperties = {
