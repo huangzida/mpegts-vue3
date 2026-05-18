@@ -234,7 +234,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="relative w-full h-full bg-black rounded-lg overflow-hidden">
+  <div class="relative w-full h-full bg-black overflow-hidden">
     <video
       ref="videoRef"
       class="absolute inset-0 w-full h-full"

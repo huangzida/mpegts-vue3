@@ -63,7 +63,7 @@ export default function App() {
 
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
           <div className="xl:col-span-2">
-            <div className="aspect-video w-full rounded-lg border border-gray-700 bg-black shadow-sm">
+            <div className="aspect-video w-full border border-gray-700 bg-black shadow-sm">
               <MpegtsPlayer
                 ref={playerRef}
                 url={url}

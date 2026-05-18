@@ -188,7 +188,6 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       width: '100%',
       height: '100%',
       backgroundColor: '#000',
-      borderRadius: '0.5rem',
       overflow: 'hidden',
     }
 
@@ -211,7 +210,7 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
 
     const noSignalOverlay: React.CSSProperties = {
       ...overlayBase,
-      backgroundColor: 'rgba(17, 24, 39, 0.9)',
+      backgroundColor: 'rgba(0, 0, 0, 1)',
     }
 
     const connectingOverlay: React.CSSProperties = {
@@ -252,7 +251,7 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
               width={40}
               height={40}
               fill="none"
-              stroke="#9ca3af"
+              stroke="#fff"
               strokeWidth={1.5}
               viewBox="0 0 24 24"
             >
@@ -269,10 +268,9 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
             </svg>
             <span
               style={{
-                marginTop: 12,
                 fontSize: 14,
                 fontWeight: 500,
-                color: '#9ca3af',
+                color: '#fff',
                 letterSpacing: '0.05em',
                 textTransform: 'uppercase',
               }}
