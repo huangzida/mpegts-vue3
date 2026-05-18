@@ -1,5 +1,19 @@
 # Changelog
 
+# [0.3.0](https://github.com/huangzida/mpegts-vue3/compare/v0.2.0...v0.3.0) (2026-05-18)
+
+
+### Bug Fixes
+
+* 适配React 17并优化播放器UI样式 ([e5b0dc7](https://github.com/huangzida/mpegts-vue3/commit/e5b0dc7241cf9e80135e498c2ed80cd4d0329e94))
+
+
+### Features
+
+* **mpegts-player:** 为Mpegts播放器添加objectFit配置支持 ([7878210](https://github.com/huangzida/mpegts-vue3/commit/78782105b983647b106ceb3cbd7daf3e3f614fb4))
+* 发布v0.2.0，新增React播放器并优化Vue播放器 ([8f4d9d4](https://github.com/huangzida/mpegts-vue3/commit/8f4d9d4c2c58781f62e71f25e8f2c26d07a21d18))
+* 新增视频objectFit配置支持，更新文档与示例 ([e7cad8a](https://github.com/huangzida/mpegts-vue3/commit/e7cad8a386a952d1463746b5e8d9909cf6356fa5))
+
 # [0.2.0](https://github.com/huangzida/mpegts-vue3/compare/v0.1.0...v0.2.0) (2026-05-15)
 
 
