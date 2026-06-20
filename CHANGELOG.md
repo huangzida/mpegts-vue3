@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/huangzida/mpegts-vue3/compare/v0.3.0...v0.3.1) (2026-06-20)
+
+
+### Bug Fixes
+
+* **mpegts播放器:** 修复自动播放异常与FLV音频识别问题 ([d85e6d9](https://github.com/huangzida/mpegts-vue3/commit/d85e6d94ebd063d8c3a2817e3901af7696904f24))
+
 # [0.3.0](https://github.com/huangzida/mpegts-vue3/compare/v0.2.0...v0.3.0) (2026-05-18)
 
 
