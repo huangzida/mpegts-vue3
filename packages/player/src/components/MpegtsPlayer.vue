@@ -44,6 +44,7 @@ const props = withDefaults(defineProps<Props>(), {
   muted: true,
   type: 'mse',
   hasVideo: true,
+  hasAudio: true,
   config: () => ({}),
 });
 
@@ -112,7 +113,9 @@ function buildMediaDataSource(): MediaDataSource {
   };
   if (props.cors !== undefined) source.cors = props.cors;
   if (props.withCredentials !== undefined) source.withCredentials = props.withCredentials;
-  if (props.hasAudio !== undefined) source.hasAudio = props.hasAudio;
+  // 默认 hasAudio: true（via withDefaults），避免某些 FLV 流（如 ZLMediaKit）
+  // 的 header flag 未标记音频导致音频包被丢弃
+  source.hasAudio = props.hasAudio;
   if (props.hasVideo !== undefined) source.hasVideo = props.hasVideo;
   if (props.duration !== undefined) source.duration = props.duration;
   if (props.filesize !== undefined) source.filesize = props.filesize;
@@ -133,9 +136,7 @@ function createPlayer() {
   emit('status', 'connecting');
 
   const mergedConfig: MpegtsConfig = { ...DEFAULT_CONFIG, ...props.config };
-  // console.log(mergedConfig);
   const mediaSource = buildMediaDataSource();
-  // console.log(mediaSource);
 
   player = Mpegts.createPlayer(mediaSource, mergedConfig);
 
@@ -162,8 +163,29 @@ function createPlayer() {
           emit('status', 'playing');
         })
         .catch(() => {
-          status.value = 'stopped';
-          emit('status', 'stopped');
+          // 浏览器自动播放策略拦截了带声音的播放，降级为静音重试
+          // （与 video.js 的 manualAutoplay_("any") 行为保持一致）
+          if (!props.muted && videoRef.value && player) {
+            videoRef.value.muted = true;
+            const fallbackResult = player.play();
+            if (fallbackResult instanceof Promise) {
+              fallbackResult
+                .then(() => {
+                  status.value = 'playing';
+                  emit('status', 'playing');
+                })
+                .catch(() => {
+                  status.value = 'stopped';
+                  emit('status', 'stopped');
+                });
+            } else {
+              status.value = 'playing';
+              emit('status', 'playing');
+            }
+          } else {
+            status.value = 'stopped';
+            emit('status', 'stopped');
+          }
         });
     } else {
       status.value = 'playing';
