@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/huangzida/mpegts-vue3/compare/v0.3.1...v0.3.2) (2026-06-20)
+
+
+### Bug Fixes
+
+* 修复FLV流音频丢失问题，规范仓库地址并更新文档 ([4bb4e82](https://github.com/huangzida/mpegts-vue3/commit/4bb4e8269c6a1fbbf45b323866ff12d9ecaf5764))
+
 ## [0.3.1](https://github.com/huangzida/mpegts-vue3/compare/v0.3.0...v0.3.1) (2026-06-20)
 
 
