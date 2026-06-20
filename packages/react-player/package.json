@@ -14,7 +14,7 @@
   "author": "",
   "repository": {
     "type": "git",
-    "url": "https://github.com/huangzida/mpegts-vue3"
+    "url": "git+https://github.com/huangzida/mpegts-vue3.git"
   },
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",

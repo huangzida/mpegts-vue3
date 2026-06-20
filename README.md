@@ -119,7 +119,7 @@ Both Vue 3 and React components share the same props interface:
 | `type` | `string` | `'mse'` | Media type: `'mse'`, `'mpegts'`, `'m2ts'`, `'flv'`, `'mp4'` |
 | `cors` | `boolean` | — | Enable CORS for HTTP fetching |
 | `withCredentials` | `boolean` | — | HTTP fetching with cookies |
-| `hasAudio` | `boolean` | — | Whether stream has audio track |
+| `hasAudio` | `boolean` | `true` | Whether stream has audio track. Defaults to `true` to avoid audio packets being dropped for FLV streams (e.g. ZLMediaKit) whose header flag doesn't mark audio |
 | `hasVideo` | `boolean` | — | Whether stream has video track |
 | `duration` | `number` | — | Total media duration in milliseconds |
 | `filesize` | `number` | — | Total file size in bytes |

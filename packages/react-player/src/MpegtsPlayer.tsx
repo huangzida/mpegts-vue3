@@ -59,7 +59,7 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       type = 'mse',
       cors,
       withCredentials,
-      hasAudio,
+      hasAudio = true,
       hasVideo,
       duration,
       filesize,
@@ -132,7 +132,9 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       }
       if (currentProps.cors !== undefined) source.cors = currentProps.cors
       if (currentProps.withCredentials !== undefined) source.withCredentials = currentProps.withCredentials
-      if (currentProps.hasAudio !== undefined) source.hasAudio = currentProps.hasAudio
+      // 默认 hasAudio: true（via 解构默认值），避免某些 FLV 流（如 ZLMediaKit）
+      // 的 header flag 未标记音频导致音频包被丢弃
+      source.hasAudio = currentProps.hasAudio
       if (currentProps.hasVideo !== undefined) source.hasVideo = currentProps.hasVideo
       if (currentProps.duration !== undefined) source.duration = currentProps.duration
       if (currentProps.filesize !== undefined) source.filesize = currentProps.filesize
