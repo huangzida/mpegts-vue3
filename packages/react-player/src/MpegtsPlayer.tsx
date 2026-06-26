@@ -38,6 +38,7 @@ export interface MpegtsPlayerProps {
   hasVideo?: boolean
   duration?: number
   filesize?: number
+  showLoading?: boolean
   config?: Partial<MpegtsConfig>
   onStatus?: (status: PlayerStatus) => void
   onError?: (errorType: string, errorDetail: string, errorInfo: any) => void
@@ -63,6 +64,7 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       hasVideo,
       duration,
       filesize,
+      showLoading = true,
       config,
       onStatus,
       onError,
@@ -235,11 +237,11 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
     }
 
     const showNoSignal = status === 'nosignal' || !url
-    const showConnecting = status === 'connecting'
+    const showConnecting = status === 'connecting' && showLoading
     const showError = status === 'error' && !!url
 
     return (
-      <div style={containerStyle}>
+      <div className="mpegts-player" style={containerStyle}>
         <video
           ref={videoRef}
           style={videoStyle}

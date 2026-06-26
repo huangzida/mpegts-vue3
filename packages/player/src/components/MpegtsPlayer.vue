@@ -35,6 +35,7 @@ interface Props {
   hasVideo?: boolean;
   duration?: number;
   filesize?: number;
+  showLoading?: boolean;
   config?: Partial<MpegtsConfig>;
 }
 
@@ -45,6 +46,7 @@ const props = withDefaults(defineProps<Props>(), {
   type: 'mse',
   hasVideo: true,
   hasAudio: true,
+  showLoading: true,
   config: () => ({}),
 });
 
@@ -256,7 +258,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="relative w-full h-full bg-black overflow-hidden">
+  <div class="mpegts-player relative w-full h-full bg-black overflow-hidden">
     <video
       ref="videoRef"
       class="absolute inset-0 w-full h-full"
@@ -293,7 +295,7 @@ onUnmounted(() => {
       </span>
     </div>
     <div
-      v-if="status === 'connecting'"
+      v-if="status === 'connecting' && showLoading"
       class="absolute inset-0 flex items-center justify-center bg-black/60"
     >
       <div class="flex flex-col items-center gap-3">

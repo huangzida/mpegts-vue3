@@ -123,6 +123,7 @@ Both Vue 3 and React components share the same props interface:
 | `hasVideo` | `boolean` | — | Whether stream has video track |
 | `duration` | `number` | — | Total media duration in milliseconds |
 | `filesize` | `number` | — | Total file size in bytes |
+| `showLoading` | `boolean` | `true` | Show the "Connecting..." loading overlay (spinner + text) while connecting to the stream |
 | `config` | `Partial<MpegtsConfig>` | `{}` | mpegts.js player config. See [mpegts.js API](https://github.com/xqq/mpegts.js/blob/master/docs/api.md) |
 
 ### Events / Callbacks
