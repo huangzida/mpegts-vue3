@@ -43,6 +43,26 @@ function fmtSpeed(kbps?: number): string {
   return kbps < 1024 ? `${Math.round(kbps)} KB/s` : `${(kbps / 1024).toFixed(1)} MB/s`;
 }
 
+// Friendly codec names: avc1→H.264, hev1/hvc1→H.265, av01→AV1, vp09→VP9.
+function fmtCodec(codec?: string): string {
+  if (!codec) return '?';
+  const c = codec.toLowerCase();
+  if (c.startsWith('avc1')) return 'H.264';
+  if (c.startsWith('hev1') || c.startsWith('hvc1')) return 'H.265';
+  if (c.startsWith('av01')) return 'AV1';
+  if (c.startsWith('vp09')) return 'VP9';
+  return codec;
+}
+
+// Short loader tag: websocket-loader→ws, fetch-stream-loader→fetch, xhr-loader→xhr.
+function fmtLoader(lt?: string): string {
+  if (!lt) return '';
+  if (lt.includes('websocket')) return 'ws';
+  if (lt.includes('fetch')) return 'fetch';
+  if (lt.includes('xhr')) return 'xhr';
+  return lt;
+}
+
 const activePlayerStatus = computed<PlayerStatus>(() => {
   const statuses = Object.values(playerStatuses.value);
   if (statuses.length === 0) return 'nosignal';
@@ -96,10 +116,12 @@ function onPlayerStatus(index: number, s: PlayerStatus) {
 }
 
 function onStatistics(index: number, info: StatisticsInfo) {
+  // console.log('statistics:', info);
   playerStats.value[index] = info;
 }
 
 function onMediaInfo(index: number, info: MediaInfo) {
+  // console.log('media info:', info); 
   playerMediaInfo.value[index] = info;
 }
 
@@ -214,13 +236,13 @@ const gridColsClass = computed(() => {
               v-if="playerMediaInfo[0]?.height"
               class="pointer-events-none absolute right-1.5 top-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-mono text-emerald-300"
             >
-              {{ playerMediaInfo[0].height }}p · {{ playerMediaInfo[0].videoCodec }}
+                {{ playerMediaInfo[0].width }}×{{ playerMediaInfo[0].height }} · {{ playerMediaInfo[0].fps }} fps · {{ fmtCodec(playerMediaInfo[0].videoCodec) }}
             </div>
             <div
               v-if="playerStats[0]"
               class="pointer-events-none absolute bottom-1.5 left-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-mono text-gray-200"
             >
-              ↓ {{ fmtSpeed(playerStats[0].speed) }} · {{ playerStats[0].decodedFrames ?? 0 }}f · drop {{ playerStats[0].droppedFrames ?? 0 }}
+              ↓ {{ fmtSpeed(playerStats[0].speed) }} · {{ playerStats[0].decodedFrames ?? 0 }}f · drop {{ playerStats[0].droppedFrames ?? 0 }}<span v-if="playerStats[0].loaderType"> · {{ fmtLoader(playerStats[0].loaderType) }}</span>
             </div>
           </div>
 
@@ -243,13 +265,13 @@ const gridColsClass = computed(() => {
                 v-if="playerMediaInfo[slot.id]?.height"
                 class="pointer-events-none absolute right-1.5 top-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-mono text-emerald-300"
               >
-                {{ playerMediaInfo[slot.id].height }}p · {{ playerMediaInfo[slot.id].videoCodec }}
+                {{ playerMediaInfo[slot.id].width }}×{{ playerMediaInfo[slot.id].height }} · {{ playerMediaInfo[slot.id].fps }} fps · {{ fmtCodec(playerMediaInfo[slot.id].videoCodec) }}
               </div>
               <div
                 v-if="playerStats[slot.id]"
                 class="pointer-events-none absolute bottom-1.5 left-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-mono text-gray-200"
               >
-                ↓ {{ fmtSpeed(playerStats[slot.id].speed) }} · {{ playerStats[slot.id].decodedFrames ?? 0 }}f · drop {{ playerStats[slot.id].droppedFrames ?? 0 }}
+                ↓ {{ fmtSpeed(playerStats[slot.id].speed) }} · {{ playerStats[slot.id].decodedFrames ?? 0 }}f · drop {{ playerStats[slot.id].droppedFrames ?? 0 }}<span v-if="playerStats[slot.id].loaderType"> · {{ fmtLoader(playerStats[slot.id].loaderType) }}</span>
               </div>
             </div>
           </div>

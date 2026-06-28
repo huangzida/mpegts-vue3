@@ -40,6 +40,26 @@ function fmtSpeed(kbps?: number): string {
   return kbps < 1024 ? `${Math.round(kbps)} KB/s` : `${(kbps / 1024).toFixed(1)} MB/s`
 }
 
+// Friendly codec names from mpegts.js MediaInfo.videoCodec codec IDs.
+function fmtCodec(codec?: string): string {
+  if (!codec) return '?'
+  const c = codec.toLowerCase()
+  if (c.startsWith('avc1')) return 'H.264'
+  if (c.startsWith('hev1') || c.startsWith('hvc1')) return 'H.265'
+  if (c.startsWith('av01')) return 'AV1'
+  if (c.startsWith('vp09')) return 'VP9'
+  return codec
+}
+
+// Short loader tag from StatisticsInfo.loaderType (e.g. 'websocket-loader' → 'ws').
+function fmtLoader(lt?: string): string {
+  if (!lt) return ''
+  if (lt.includes('websocket')) return 'ws'
+  if (lt.includes('fetch')) return 'fetch'
+  if (lt.includes('xhr')) return 'xhr'
+  return lt
+}
+
 const SEVERITY: Record<PlayerStatus, number> = {
   error: 0,
   reconnecting: 1,
@@ -208,7 +228,8 @@ export default function App() {
                     />
                     {mi?.height && (
                       <span className="absolute right-1.5 top-1.5 rounded bg-black/60 px-1.5 py-0.5 font-mono text-[10px] text-emerald-300">
-                        {mi.height}p{mi.videoCodec ? ` · ${mi.videoCodec}` : ''}
+                        {mi.width ?? '?'}×{mi.height} ·{' '}
+                        {mi.fps != null ? `${mi.fps} fps` : '? fps'} · {fmtCodec(mi.videoCodec)}
                       </span>
                     )}
                     {st && (
@@ -216,6 +237,7 @@ export default function App() {
                         {st.speed != null ? `↓ ${fmtSpeed(st.speed)} · ` : ''}
                         {st.decodedFrames != null ? `${st.decodedFrames}f · ` : ''}
                         drop {st.droppedFrames ?? 0}
+                        {st.loaderType ? ` · ${fmtLoader(st.loaderType)}` : ''}
                       </span>
                     )}
                   </div>
