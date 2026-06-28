@@ -1,5 +1,25 @@
 # Changelog
 
+# [0.4.0](https://github.com/huangzida/mpegts-vue3/compare/v0.3.2...v0.4.0) (2026-06-28)
+
+
+### Bug Fixes
+
+* **demo:** stats 浮层下载速度格式化 (整数 KB/s, 过 1024 自动 MB/s) ([72ab6b7](https://github.com/huangzida/mpegts-vue3/commit/72ab6b73e4e7fdcc69545f5236974974c57fce3f))
+* **demo:** URL 输入改为点击应用/回车才提交 (不再逐键重连) ([a6d6d30](https://github.com/huangzida/mpegts-vue3/commit/a6d6d30fb8275c6165f06f54c96ff38aba915bf4))
+* **demo:** 修 16:9 变形 + 放宽播放区让 tile 更大 ([7d953cb](https://github.com/huangzida/mpegts-vue3/commit/7d953cbf26caae4f52bc0faf19226ba147575e8d))
+
+
+### Features
+
+* demo P0+P1 改造、展示区放大、README 重写、apps 进 typecheck gate ([331002e](https://github.com/huangzida/mpegts-vue3/commit/331002e873aba540dbeb2de72ca7643135eb1e6b))
+* **demo:** 徽章显示 分辨率+fps+友好codec, stats 加 loader tag ([a845b39](https://github.com/huangzida/mpegts-vue3/commit/a845b398c465802bab149d662c3072b0948028fa))
+* 从包入口 re-export mpegts.js 命名空间 (getFeatureList/isSupported/Events) ([330ba7a](https://github.com/huangzida/mpegts-vue3/commit/330ba7a45f796e0f048b2c4984748c92b736b698))
+* 启用 worker、live 自动重连、statistics/mediaInfo/recovered 事件 ([abb751c](https://github.com/huangzida/mpegts-vue3/commit/abb751c38e7b9421a2fd357b6208fbaffa822b4a))
+* 控制栏 API、reuseRedirectedURL 默认、VOD ended 事件、性能文档 ([36af51d](https://github.com/huangzida/mpegts-vue3/commit/36af51d985c4934e87fb8ba93fd367831d2492d9))
+* 播放器健壮性增强、ref API 扩展、测试网与发版门禁 ([53011a0](https://github.com/huangzida/mpegts-vue3/commit/53011a02013e2a9dd9202d0f2fece4830943e1af))
+* 添加showLoading props以控制连接加载层显示 ([c029092](https://github.com/huangzida/mpegts-vue3/commit/c029092cb052e40772c6d150c4bd75d4f8d1df33))
+
 ## [0.3.2](https://github.com/huangzida/mpegts-vue3/compare/v0.3.1...v0.3.2) (2026-06-20)
 
 
