@@ -131,17 +131,11 @@ const gridColsClass = computed(() => {
   if (gridLayout.value === 4) return 'grid-cols-2';
   return 'grid-cols-1';
 });
-
-const gridRowsClass = computed(() => {
-  if (gridLayout.value === 9) return 'grid-rows-3';
-  if (gridLayout.value === 4) return 'grid-rows-2';
-  return 'grid-rows-1';
-});
 </script>
 
 <template>
   <div class="min-h-screen bg-gray-950 text-white p-6">
-    <div class="mx-auto max-w-7xl flex flex-col gap-6">
+    <div class="mx-auto max-w-[1800px] flex flex-col gap-6">
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-3">
           <Monitor class="size-6 text-blue-500" />
@@ -164,8 +158,8 @@ const gridRowsClass = computed(() => {
         </div>
       </div>
 
-      <div class="grid grid-cols-1 gap-6 xl:grid-cols-3">
-        <div class="xl:col-span-2">
+      <div class="flex flex-col gap-6 xl:flex-row">
+        <div class="min-w-0 xl:flex-1">
           <div class="mb-3 flex items-center gap-2">
             <span class="text-xs text-gray-400">{{ t('windows') }}:</span>
             <button
@@ -224,18 +218,17 @@ const gridRowsClass = computed(() => {
             </div>
           </div>
 
-          <div v-else class="grid h-[calc(100dvh-160px)] w-full gap-2" :class="[gridColsClass, gridRowsClass]">
+          <div v-else class="grid w-full gap-2" :class="gridColsClass">
             <div
               v-for="slot in gridSlots"
               :key="slot.id"
-              class="relative h-full min-h-0 w-full overflow-hidden rounded-lg border border-gray-700 bg-black shadow-sm"
+              class="relative aspect-video w-full overflow-hidden rounded-lg border border-gray-700 bg-black shadow-sm"
             >
               <MpegtsPlayer
                 :ref="(el: any) => setPlayerRef(slot.id, el)"
                 :url="inputUrl"
                 :muted="muted"
                 :config="config"
-                object-fit="cover"
                 @status="(s: PlayerStatus) => onPlayerStatus(slot.id, s)"
                 @statistics="(info: StatisticsInfo) => onStatistics(slot.id, info)"
                 @mediaInfo="(info: MediaInfo) => onMediaInfo(slot.id, info)"
@@ -256,7 +249,7 @@ const gridRowsClass = computed(() => {
           </div>
         </div>
 
-        <div class="flex flex-col gap-4">
+        <div class="flex flex-col gap-4 xl:w-80 xl:shrink-0">
           <div class="rounded-lg border border-gray-700 bg-gray-900 p-4">
             <h3 class="m-0 mb-3 text-sm font-semibold">{{ t('streamUrl') }}</h3>
             <div class="flex gap-2">

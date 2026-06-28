@@ -84,11 +84,6 @@ export default function App() {
   // enableWorker actually flips, not every render.
   const config = { enableWorker }
   const aggregateStatus = worstOf(statuses, gridLayout)
-  // 1-grid stays width-driven at a correct 16:9; multi-view switches to a
-  // viewport-height grid (auto-rows-fr) so tiles fill the area instead of
-  // shrinking to a tiny width-driven strip. Cover crops (no distortion) so
-  // the video actually fills each cell — surveillance-grid style.
-  const isMulti = gridLayout !== 1
 
   const applyUrl = useCallback(() => {
     const trimmed = inputUrl.trim()
@@ -122,7 +117,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-950 text-white p-6">
-      <div className="mx-auto max-w-7xl flex flex-col gap-6">
+      <div className="mx-auto max-w-[1800px] flex flex-col gap-6">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <svg
@@ -187,26 +182,19 @@ export default function App() {
               </div>
             </div>
 
-            <div
-              className={`grid w-full gap-2 ${GRID_COLS[gridLayout]}${
-                isMulti ? ' h-[calc(100dvh-150px)] auto-rows-fr' : ''
-              }`}
-            >
+            <div className={`grid w-full gap-2 ${GRID_COLS[gridLayout]}`}>
               {Array.from({ length: gridLayout }, (_, i) => {
                 const mi = mediaInfos[i]
                 const st = stats[i]
                 return (
                   <div
                     key={i}
-                    className={`relative border border-gray-700 bg-black shadow-sm ${
-                      isMulti ? 'h-full min-h-0' : 'aspect-video'
-                    }`}
+                    className="relative aspect-video border border-gray-700 bg-black shadow-sm"
                   >
                     <MpegtsPlayer
                       ref={(el) => setPlayerRef(i, el)}
                       url={url}
                       muted={muted}
-                      objectFit={isMulti ? 'cover' : 'fill'}
                       config={config}
                       onStatus={(s) => setStatuses((p) => ({ ...p, [i]: s }))}
                       onStatistics={(info) => setStats((p) => ({ ...p, [i]: info }))}
