@@ -5,7 +5,10 @@ export type {
 } from './MpegtsPlayer'
 export type {
   MediaDataSource,
+  MediaInfo,
   MediaSegment,
   MpegtsConfig,
   PlayerStatus,
+  ReconnectConfig,
+  StatisticsInfo,
 } from './types'

@@ -24,6 +24,7 @@ const { recorder, MockPlayer } = vi.hoisted(() => {
     source: any;
     config: any;
     errorCb: ((t: string, d: string, i: unknown) => void) | null = null;
+    handlers = new Map<string, (...args: any[]) => void>();
     playDeferred: Deferred | null = null;
     constructor(source: any, config: any) {
       this.source = source;
@@ -34,7 +35,10 @@ const { recorder, MockPlayer } = vi.hoisted(() => {
       this.calls.push('attachMediaElement');
     }
     on(event: string, cb: any) {
-      if (event === 'error') this.errorCb = cb;
+      this.handlers.set(event, cb);
+    }
+    fire(event: string, ...args: any[]) {
+      this.handlers.get(event)?.(...args);
     }
     load() {
       this.calls.push('load');
@@ -66,21 +70,30 @@ vi.mock('mpegts.js', () => ({
   default: {
     isSupported: () => recorder.isSupported,
     createPlayer: (source: any, config: any) => new MockPlayer(source, config),
-    Events: { ERROR: 'error' },
+    Events: { ERROR: 'error', STATISTICS_INFO: 'statistics_info', MEDIA_INFO: 'media_info', RECOVERED_EARLY_EOF: 'recovered_early_eof' },
   },
 }));
 
 describe('MpegtsPlayer (React)', () => {
   const statuses: string[] = [];
   const errors: Array<[string, string, unknown]> = [];
+  const statistics: any[] = [];
+  const mediaInfos: any[] = [];
+  let recovered = 0;
   const onStatus = (s: string) => statuses.push(s);
   const onError = (t: string, d: string, i: unknown) => errors.push([t, d, i]);
+  const onStatistics = (i: any) => statistics.push(i);
+  const onMediaInfo = (i: any) => mediaInfos.push(i);
+  const onRecovered = () => { recovered++ };
 
   beforeEach(() => {
     recorder.players.length = 0;
     recorder.isSupported = true;
     statuses.length = 0;
     errors.length = 0;
+    statistics.length = 0;
+    mediaInfos.length = 0;
+    recovered = 0;
   });
   afterEach(() => cleanup());
 
@@ -92,6 +105,9 @@ describe('MpegtsPlayer (React)', () => {
         url="ws://x/live.flv"
         onStatus={onStatus}
         onError={onError}
+        onStatistics={onStatistics}
+        onMediaInfo={onMediaInfo}
+        onRecovered={onRecovered}
         {...props}
       />,
     );
@@ -176,5 +192,53 @@ describe('MpegtsPlayer (React)', () => {
     recorder.isSupported = false;
     renderIt({ type: 'mp4' });
     expect(recorder.players).toHaveLength(1);
+  });
+
+  it('forwards STATISTICS_INFO and MEDIA_INFO events', async () => {
+    renderIt();
+    const p = recorder.players[0];
+    await act(async () => {
+      p.fire('statistics_info', { speed: 100 });
+      p.fire('media_info', { width: 1920 });
+    });
+    expect(statistics[0]).toMatchObject({ speed: 100 });
+    expect(mediaInfos[0]).toMatchObject({ width: 1920 });
+  });
+
+  it('autoReconnect=false → transient network error is terminal', async () => {
+    renderIt({ autoReconnect: false });
+    await act(async () => {
+      recorder.players[0].fire('error', 'NetworkError', 'UnrecoverableEarlyEof', {});
+    });
+    expect(statuses.at(-1)).toBe('error');
+    expect(statuses.includes('reconnecting')).toBe(false);
+  });
+
+  it('auto-reconnects on transient network error, resets on success', async () => {
+    vi.useFakeTimers();
+    renderIt({ reconnect: { retries: 3, minDelay: 1000, maxDelay: 8000 } });
+    const p1 = recorder.players[0];
+    await act(async () => {
+      p1.fire('error', 'NetworkError', 'UnrecoverableEarlyEof', {});
+    });
+    expect(statuses.includes('reconnecting')).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(recorder.players).toHaveLength(2);
+    await act(async () => { recorder.players[1].playDeferred!.resolve(); });
+    expect(statuses.filter((s) => s === 'playing')).toHaveLength(1);
+    vi.useRealTimers();
+  });
+
+  it('gives up after retries exhausted → terminal error', async () => {
+    vi.useFakeTimers();
+    renderIt({ reconnect: { retries: 2, minDelay: 500, maxDelay: 500 } });
+    await act(async () => { recorder.players[0].fire('error', 'NetworkError', 'UnrecoverableEarlyEof', {}); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    await act(async () => { recorder.players[1].fire('error', 'NetworkError', 'UnrecoverableEarlyEof', {}); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    await act(async () => { recorder.players[2].fire('error', 'NetworkError', 'UnrecoverableEarlyEof', {}); });
+    expect(recorder.players).toHaveLength(3);
+    expect(statuses.at(-1)).toBe('error');
+    vi.useRealTimers();
   });
 });

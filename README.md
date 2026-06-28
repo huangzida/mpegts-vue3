@@ -126,14 +126,17 @@ Both Vue 3 and React components share the same props interface:
 | `filesize` | `number` | — | Total file size in bytes |
 | `showLoading` | `boolean` | `true` | Show the "Connecting..." loading overlay (spinner + text) while connecting to the stream |
 | `config` | `Partial<MpegtsConfig>` | `{}` | mpegts.js player config. See [mpegts.js API](https://github.com/xqq/mpegts.js/blob/master/docs/api.md) |
+| `autoReconnect` | `boolean` | `true` | Auto-reconnect on transient live network errors (mpegts.js only auto-reconnects VOD). Exponential backoff up to `reconnect.retries`. |
+| `reconnect` | `{ retries?, minDelay?, maxDelay? }` | `{ retries: 5, minDelay: 1000, maxDelay: 16000 }` | Reconnect backoff tuning (ms). delay = `min(maxDelay, minDelay * 2^attempt)`. |
 
 ### Config merge
 
-`config` is shallow-merged with the package's low-latency live defaults: `{ ...DEFAULT_CONFIG, ...config }`. Your `config` overrides matching top-level keys; keys you don't set keep their defaults. There is no way to "unset" a default by passing `undefined` — omit the key to keep the default, or pass an explicit value to override. `config` is treated as create-time: changing it after mount debounces a player rebuild (~300 ms).
+`config` is shallow-merged with the package's low-latency live defaults: `{ ...DEFAULT_CONFIG, ...config }`. Your `config` overrides matching top-level keys; keys you don't set keep their defaults. There is no way to "unset" a default by passing `undefined` — omit the key to keep the default, or pass an explicit value to override. `config` is treated as create-time: changing it after mount debounces a player rebuild (~300 ms). Notable defaults: **`enableWorker: true`** (transmuxing off the main thread — the biggest perf lever for multi-view; pass `false` under CSP/no-Worker constraints), `enableStashBuffer: false`, `liveSyncTargetLatency: 0.5`.
 
 ### Notes
 
 - **Latency**: defaults (`enableStashBuffer: false`, `liveSyncTargetLatency: 0.5`, `liveBufferLatencyChasing: true`) target sub-second live latency. On lossy networks this can cause stalls — raise `liveSyncTargetLatency` / enable `enableStashBuffer` via `config` if you need stability over latency.
+- **Auto-reconnect**: on transient live network errors (`ConnectingTimeout`, `UnrecoverableEarlyEof`, `Exception`) the player retries with exponential backoff (default 5 tries, 1s→16s), emitting a `reconnecting` status. HTTP status errors (4xx/5xx) are **not** retried (permanent). Disable with `autoReconnect={false}`.
 - **`type` and MSE**: types `mse` / `mpegts` / `m2ts` / `flv` route through mpegts.js's MSE path and require `MediaSource Extensions`. Any other `type` (e.g. `mp4`) uses native `<video>` playback and works on browsers without MSE (e.g. iOS Safari). FLV **cannot** play on MSE-less browsers — there is no software-decode fallback.
 - **SSR / client-only**: the component imports `mpegts.js`, which touches `window` at module load, so it is **client-only**. In Nuxt wrap with `<ClientOnly>`; in Next.js use `next/dynamic(() => import(...), { ssr: false })`.
 
@@ -143,6 +146,9 @@ Both Vue 3 and React components share the same props interface:
 |-------|---------|-------------|
 | `onStatus` / `@status` | `(status: PlayerStatus)` | Status change |
 | `onError` / `@error` | `(errorType, errorDetail, errorInfo)` | Playback error |
+| `onStatistics` / `@statistics` | `(info: StatisticsInfo)` | mpegts.js telemetry (speed KB/s, decoded/dropped frames, segment counts) every ~600 ms |
+| `onMediaInfo` / `@mediaInfo` | `(info: MediaInfo)` | Resolved media info (resolution, fps, codecs, bitrate) — fires once when known |
+| `onRecovered` / `@recovered` | `()` | Stream self-healed after an early-EOF (mpegts.js internal VOD reconnect) |
 
 ### Ref Methods
 
@@ -158,11 +164,12 @@ Both Vue 3 and React components share the same props interface:
 
 ```ts
 type PlayerStatus =
-  | 'connecting'  // Connecting to stream
-  | 'error'       // Playback error
-  | 'nosignal'    // No signal / no url
-  | 'playing'     // Playing
-  | 'stopped'     // Paused / stopped
+  | 'connecting'   // Connecting to stream
+  | 'reconnecting' // Auto-reconnecting after a transient network error
+  | 'error'        // Playback error (terminal: retries exhausted or non-recoverable)
+  | 'nosignal'     // No signal / no url
+  | 'playing'      // Playing
+  | 'stopped'      // Paused / stopped
 ```
 
 ## Demo

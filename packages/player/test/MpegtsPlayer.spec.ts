@@ -27,6 +27,7 @@ const { recorder, MockPlayer } = vi.hoisted(() => {
     source: any;
     config: any;
     errorCb: ((t: string, d: string, i: unknown) => void) | null = null;
+    handlers = new Map<string, (...args: any[]) => void>();
     playDeferred: Deferred | null = null;
     constructor(source: any, config: any) {
       this.source = source;
@@ -37,7 +38,10 @@ const { recorder, MockPlayer } = vi.hoisted(() => {
       this.calls.push('attachMediaElement');
     }
     on(event: string, cb: any) {
-      if (event === 'error') this.errorCb = cb;
+      this.handlers.set(event, cb);
+    }
+    fire(event: string, ...args: any[]) {
+      this.handlers.get(event)?.(...args);
     }
     load() {
       this.calls.push('load');
@@ -69,7 +73,7 @@ vi.mock('mpegts.js', () => ({
   default: {
     isSupported: () => recorder.isSupported,
     createPlayer: (source: any, config: any) => new MockPlayer(source, config),
-    Events: { ERROR: 'error' },
+    Events: { ERROR: 'error', STATISTICS_INFO: 'statistics_info', MEDIA_INFO: 'media_info', RECOVERED_EARLY_EOF: 'recovered_early_eof' },
   },
 }));
 
@@ -190,6 +194,60 @@ describe('MpegtsPlayer (Vue)', () => {
     const w = mountIt({ type: 'mp4' });
     await nextTick();
     expect(recorder.players).toHaveLength(1); // created via NativePlayer, gate skipped
+    w.unmount();
+  });
+
+  it('forwards STATISTICS_INFO and MEDIA_INFO events', async () => {
+    const w = mountIt();
+    await nextTick();
+    const p = recorder.players[0];
+    p.fire('statistics_info', { speed: 100, decodedFrames: 10 });
+    p.fire('media_info', { width: 1920, height: 1080 });
+    await nextTick();
+    expect(w.emitted('statistics')?.[0]?.[0]).toMatchObject({ speed: 100 });
+    expect(w.emitted('mediaInfo')?.[0]?.[0]).toMatchObject({ width: 1920 });
+    w.unmount();
+  });
+
+  it('autoReconnect=false → transient network error is terminal', async () => {
+    const w = mountIt({ autoReconnect: false });
+    await nextTick();
+    recorder.players[0].fire('error', 'NetworkError', 'UnrecoverableEarlyEof', {});
+    await nextTick();
+    expect(statuses(w).at(-1)).toBe('error');
+    expect(statuses(w).includes('reconnecting')).toBe(false);
+    w.unmount();
+  });
+
+  it('auto-reconnects on transient network error, resets on success', async () => {
+    vi.useFakeTimers();
+    const w = mountIt({ reconnect: { retries: 3, minDelay: 1000, maxDelay: 8000 } });
+    await vi.advanceTimersByTimeAsync(0);
+    recorder.players[0].fire('error', 'NetworkError', 'UnrecoverableEarlyEof', {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(statuses(w).includes('reconnecting')).toBe(true);
+    await vi.advanceTimersByTimeAsync(1000); // backoff fires → recreate
+    expect(recorder.players).toHaveLength(2);
+    recorder.players[1].playDeferred!.resolve(); // reconnect succeeds
+    await vi.advanceTimersByTimeAsync(0);
+    expect(statuses(w).filter((s) => s === 'playing')).toHaveLength(1);
+    vi.useRealTimers();
+    w.unmount();
+  });
+
+  it('gives up after retries exhausted → terminal error', async () => {
+    vi.useFakeTimers();
+    const w = mountIt({ reconnect: { retries: 2, minDelay: 500, maxDelay: 500 } });
+    await vi.advanceTimersByTimeAsync(0);
+    recorder.players[0].fire('error', 'NetworkError', 'UnrecoverableEarlyEof', {});
+    await vi.advanceTimersByTimeAsync(500);
+    recorder.players[1].fire('error', 'NetworkError', 'UnrecoverableEarlyEof', {});
+    await vi.advanceTimersByTimeAsync(500);
+    recorder.players[2].fire('error', 'NetworkError', 'UnrecoverableEarlyEof', {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(recorder.players).toHaveLength(3); // initial + 2 reconnects
+    expect(statuses(w).at(-1)).toBe('error'); // 3rd error → exhausted → terminal
+    vi.useRealTimers();
     w.unmount();
   });
 });

@@ -3,13 +3,14 @@ import type { CSSProperties, Ref } from 'vue';
 
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 
-import type { MediaDataSource, MpegtsConfig, PlayerStatus } from '../types';
+import type { MediaDataSource, MediaInfo, MpegtsConfig, PlayerStatus, ReconnectConfig, StatisticsInfo } from '../types';
 
 // Client-only: mpegts.js touches `window` at module load. SSR consumers must
 // wrap this component (Nuxt <ClientOnly> / next/dynamic { ssr: false }).
 import Mpegts from 'mpegts.js';
 
 const DEFAULT_CONFIG: MpegtsConfig = {
+  enableWorker: true,
   enableStashBuffer: false,
   liveBufferLatencyChasing: true,
   liveBufferLatencyChasingOnPaused: true,
@@ -45,6 +46,8 @@ interface Props {
   filesize?: number;
   showLoading?: boolean;
   config?: Partial<MpegtsConfig>;
+  autoReconnect?: boolean;
+  reconnect?: ReconnectConfig;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -56,11 +59,16 @@ const props = withDefaults(defineProps<Props>(), {
   hasVideo: true,
   showLoading: true,
   config: () => ({}),
+  autoReconnect: true,
+  reconnect: () => ({ retries: 5, minDelay: 1000, maxDelay: 16000 }),
 });
 
 const emit = defineEmits<{
   error: [errorType: string, errorDetail: string, errorInfo: any];
   status: [status: PlayerStatus];
+  statistics: [info: StatisticsInfo];
+  mediaInfo: [info: MediaInfo];
+  recovered: [];
 }>();
 
 const videoRef = ref<HTMLVideoElement>() as Ref<HTMLVideoElement>;
@@ -80,6 +88,33 @@ function scheduleRecreate() {
     recreateTimer = null;
     createPlayer();
   }, 300);
+}
+
+// mpegts.js auto-reconnects VOD internally but for live it throws
+// UnrecoverableEarlyEof to the upper layer — so the wrapper owns live reconnect.
+// Backoff caps retries; the burst resets on successful playback (markPlaying).
+const RECONNECTABLE_ERRORS = new Set(['Exception', 'ConnectingTimeout', 'UnrecoverableEarlyEof']);
+let reconnectAttempts = 0;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+function markPlaying() {
+  reconnectAttempts = 0;
+  status.value = 'playing';
+  emit('status', 'playing');
+}
+
+function scheduleReconnect(): boolean {
+  const { retries = 5, minDelay = 1000, maxDelay = 16000 } = props.reconnect;
+  if (reconnectAttempts >= retries) return false;
+  const delay = Math.min(maxDelay, minDelay * 2 ** reconnectAttempts);
+  reconnectAttempts++;
+  status.value = 'reconnecting';
+  emit('status', 'reconnecting');
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    createPlayer();
+  }, delay);
+  return true;
 }
 
 const videoStyle = computed<CSSProperties>(() => ({
@@ -137,6 +172,10 @@ function destroyPlayer(silent = false) {
     clearTimeout(recreateTimer);
     recreateTimer = null;
   }
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
   if (!player) return;
   try {
     player.pause();
@@ -163,8 +202,7 @@ function play() {
     result
       .then(() => {
         if (myGen !== gen) return;
-        status.value = 'playing';
-        emit('status', 'playing');
+        markPlaying();
       })
       .catch(() => {
         if (myGen !== gen) return;
@@ -172,8 +210,7 @@ function play() {
         emit('status', 'stopped');
       });
   } else {
-    status.value = 'playing';
-    emit('status', 'playing');
+    markPlaying();
   }
 }
 
@@ -241,11 +278,32 @@ function createPlayer() {
     Mpegts.Events.ERROR,
     (errorType: string, errorDetail: string, errorInfo: any) => {
       if (myGen !== gen) return;
+      emit('error', errorType, errorDetail, errorInfo);
+      if (
+        props.autoReconnect &&
+        errorType === 'NetworkError' &&
+        RECONNECTABLE_ERRORS.has(errorDetail) &&
+        scheduleReconnect()
+      ) {
+        return; // reconnect scheduled — not a terminal error
+      }
       status.value = 'error';
       emit('status', 'error');
-      emit('error', errorType, errorDetail, errorInfo);
     },
   );
+
+  player.on(Mpegts.Events.STATISTICS_INFO, (info: StatisticsInfo) => {
+    if (myGen !== gen) return;
+    emit('statistics', info);
+  });
+  player.on(Mpegts.Events.MEDIA_INFO, (info: MediaInfo) => {
+    if (myGen !== gen) return;
+    emit('mediaInfo', info);
+  });
+  player.on(Mpegts.Events.RECOVERED_EARLY_EOF, () => {
+    if (myGen !== gen) return;
+    emit('recovered');
+  });
 
   player.load();
 
@@ -256,8 +314,7 @@ function createPlayer() {
       result
         .then(() => {
           if (myGen !== gen) return;
-          status.value = 'playing';
-          emit('status', 'playing');
+          markPlaying();
         })
         .catch(() => {
           // 浏览器自动播放策略拦截了带声音的播放，降级为静音重试
@@ -270,8 +327,7 @@ function createPlayer() {
               fallbackResult
                 .then(() => {
                   if (myGen !== gen) return;
-                  status.value = 'playing';
-                  emit('status', 'playing');
+                  markPlaying();
                 })
                 .catch(() => {
                   if (myGen !== gen) return;
@@ -279,8 +335,7 @@ function createPlayer() {
                   emit('status', 'stopped');
                 });
             } else {
-              status.value = 'playing';
-              emit('status', 'playing');
+              markPlaying();
             }
           } else {
             status.value = 'stopped';
@@ -288,8 +343,7 @@ function createPlayer() {
           }
         });
     } else {
-      status.value = 'playing';
-      emit('status', 'playing');
+      markPlaying();
     }
   }
 }

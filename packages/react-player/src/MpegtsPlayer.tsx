@@ -10,9 +10,10 @@ import {
   useState,
 } from 'react'
 
-import type { MediaDataSource, MpegtsConfig, PlayerStatus } from './types'
+import type { MediaDataSource, MediaInfo, MpegtsConfig, PlayerStatus, ReconnectConfig, StatisticsInfo } from './types'
 
 const DEFAULT_CONFIG: MpegtsConfig = {
+  enableWorker: true,
   enableStashBuffer: false,
   liveBufferLatencyChasing: true,
   liveBufferLatencyChasingOnPaused: true,
@@ -31,6 +32,11 @@ const DEFAULT_CONFIG: MpegtsConfig = {
 // any other type routes to NativePlayer (native <video>, no MSE). Only gate on
 // isSupported() for the MSE-required set.
 const MSE_REQUIRED_TYPES: string[] = ['mse', 'mpegts', 'm2ts', 'flv']
+
+// mpegts.js only auto-reconnects VOD; for live it throws to the upper layer.
+// These transient network error details are the ones worth retrying (not
+// HttpStatusCodeInvalid, which is a permanent 4xx/5xx).
+const RECONNECTABLE_ERRORS = new Set(['Exception', 'ConnectingTimeout', 'UnrecoverableEarlyEof'])
 
 // ponytail: static styles hoisted to module scope (allocated once, not per
 // render) and the one keyframe injected once — mirrors the Vue sibling's
@@ -87,6 +93,11 @@ export interface MpegtsPlayerProps {
   config?: Partial<MpegtsConfig>
   onStatus?: (status: PlayerStatus) => void
   onError?: (errorType: string, errorDetail: string, errorInfo: any) => void
+  onStatistics?: (info: StatisticsInfo) => void
+  onMediaInfo?: (info: MediaInfo) => void
+  onRecovered?: () => void
+  autoReconnect?: boolean
+  reconnect?: ReconnectConfig
 }
 
 export interface MpegtsPlayerRef {
@@ -116,6 +127,11 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       config,
       onStatus,
       onError,
+      onStatistics,
+      onMediaInfo,
+      onRecovered,
+      autoReconnect = true,
+      reconnect,
     } = props
 
     const videoRef = useRef<HTMLVideoElement>(null)
@@ -126,11 +142,23 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
     onStatusRef.current = onStatus
     const onErrorRef = useRef(onError)
     onErrorRef.current = onError
+    const onStatisticsRef = useRef(onStatistics)
+    onStatisticsRef.current = onStatistics
+    const onMediaInfoRef = useRef(onMediaInfo)
+    onMediaInfoRef.current = onMediaInfo
+    const onRecoveredRef = useRef(onRecovered)
+    onRecoveredRef.current = onRecovered
+    const autoReconnectRef = useRef(autoReconnect)
+    autoReconnectRef.current = autoReconnect
+    const reconnectRef = useRef(reconnect)
+    reconnectRef.current = reconnect
 
     // ponytail: generation guard — bump on every destroy/cleanup so in-flight
     // autoplay promise callbacks bail instead of setState after unmount or
     // writing status for a stale player (P0-3).
     const genRef = useRef(0)
+    const reconnectAttemptsRef = useRef(0)
+    const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
     // ponytail: JSON signature collapses all create-affecting props into one
     // effect dep, so config/source changes now recreate the player instead of
@@ -156,6 +184,25 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       onStatusRef.current?.(s)
     }, [])
 
+    const markPlaying = useCallback(() => {
+      reconnectAttemptsRef.current = 0
+      updateStatus('playing')
+    }, [updateStatus])
+
+    // mpegts.js throws live early-eof to the upper layer; we own reconnect.
+    const scheduleReconnect = useCallback((): boolean => {
+      const { retries = 5, minDelay = 1000, maxDelay = 16000 } = reconnectRef.current ?? {}
+      if (reconnectAttemptsRef.current >= retries) return false
+      const delay = Math.min(maxDelay, minDelay * 2 ** reconnectAttemptsRef.current)
+      reconnectAttemptsRef.current++
+      updateStatus('reconnecting')
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null
+        setReloadNonce((n) => n + 1)
+      }, delay)
+      return true
+    }, [updateStatus])
+
     const doPlay = useCallback(() => {
       const player = playerRef.current
       if (!player || !videoRef.current) return
@@ -164,12 +211,12 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       const result = player.play()
       if (result instanceof Promise) {
         result
-          .then(() => { if (myGen === genRef.current) updateStatus('playing') })
+          .then(() => { if (myGen === genRef.current) markPlaying() })
           .catch(() => { if (myGen === genRef.current) updateStatus('stopped') })
       } else {
-        updateStatus('playing')
+        markPlaying()
       }
-    }, [updateStatus, muted])
+    }, [updateStatus, markPlaying, muted])
 
     const doPause = useCallback(() => {
       const player = playerRef.current
@@ -226,10 +273,31 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
         Mpegts.Events.ERROR,
         (errorType: string, errorDetail: string, errorInfo: any) => {
           if (myGen !== genRef.current) return
-          updateStatus('error')
           onErrorRef.current?.(errorType, errorDetail, errorInfo)
+          if (
+            autoReconnectRef.current &&
+            errorType === 'NetworkError' &&
+            RECONNECTABLE_ERRORS.has(errorDetail) &&
+            scheduleReconnect()
+          ) {
+            return // reconnect scheduled — not a terminal error
+          }
+          updateStatus('error')
         },
       )
+
+      player.on(Mpegts.Events.STATISTICS_INFO, (info: StatisticsInfo) => {
+        if (myGen !== genRef.current) return
+        onStatisticsRef.current?.(info)
+      })
+      player.on(Mpegts.Events.MEDIA_INFO, (info: MediaInfo) => {
+        if (myGen !== genRef.current) return
+        onMediaInfoRef.current?.(info)
+      })
+      player.on(Mpegts.Events.RECOVERED_EARLY_EOF, () => {
+        if (myGen !== genRef.current) return
+        onRecoveredRef.current?.()
+      })
 
       player.load()
 
@@ -238,7 +306,7 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
         const result = player.play()
         if (result instanceof Promise) {
           result
-            .then(() => { if (myGen === genRef.current) updateStatus('playing') })
+            .then(() => { if (myGen === genRef.current) markPlaying() })
             .catch(() => {
               // 浏览器自动播放策略拦截了带声音的播放，降级为静音重试
               // （与 video.js 的 manualAutoplay_("any") 行为保持一致）
@@ -248,22 +316,26 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
                 const fallbackResult = player.play()
                 if (fallbackResult instanceof Promise) {
                   fallbackResult
-                    .then(() => { if (myGen === genRef.current) updateStatus('playing') })
+                    .then(() => { if (myGen === genRef.current) markPlaying() })
                     .catch(() => { if (myGen === genRef.current) updateStatus('stopped') })
                 } else {
-                  updateStatus('playing')
+                  markPlaying()
                 }
               } else {
                 updateStatus('stopped')
               }
             })
         } else {
-          updateStatus('playing')
+          markPlaying()
         }
       }
 
       return () => {
         genRef.current++
+        if (reconnectTimerRef.current) {
+          clearTimeout(reconnectTimerRef.current)
+          reconnectTimerRef.current = null
+        }
         try {
           player.pause()
           player.unload()
