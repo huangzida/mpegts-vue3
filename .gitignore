@@ -4,3 +4,5 @@ dist
 .DS_Store
 *.log
 .codegraph/
+# Generated into package dirs at build time (from root README) for npm publish
+packages/*/README.md
