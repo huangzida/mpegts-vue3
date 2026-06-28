@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 
 import { Languages, Monitor } from 'lucide-vue-next';
 
 import { Input, Slider, Switch } from 'antdv-next';
 
 import { MpegtsPlayer } from 'mpegts-vue3';
-import type { MpegtsConfig, PlayerStatus } from 'mpegts-vue3';
+import type { MediaInfo, MpegtsConfig, PlayerStatus, StatisticsInfo } from 'mpegts-vue3';
 
 import { t, toggleLocale, useLocale } from './i18n';
 
@@ -15,16 +15,16 @@ type GridLayout = 1 | 4 | 9;
 const lang = useLocale();
 const langLabel = computed(() => (lang.value === 'en' ? '中文' : 'EN'));
 
-const DEFAULT_URL = 'ws://192.168.100.94:15354/live/chn1.flv';
+const DEFAULT_URL = import.meta.env.VITE_DEMO_URL || '';
+const STORAGE_KEY = 'mpegts_demo_url';
 
 const gridLayout = ref<GridLayout>(1);
 const muted = ref(true);
-const inputUrl = ref(DEFAULT_URL);
+const inputUrl = ref(localStorage.getItem(STORAGE_KEY) || DEFAULT_URL);
 
-const presets = computed(() => [
-  { label: `${t('channel')} 1`, url: 'ws://192.168.100.94:15354/live/chn1.flv' },
-  { label: `${t('channel')} 2`, url: 'ws://192.168.100.94:15354/live/chn2.flv' },
-]);
+watch(inputUrl, (v) => {
+  v ? localStorage.setItem(STORAGE_KEY, v) : localStorage.removeItem(STORAGE_KEY);
+});
 
 const gridSlots = computed(() => {
   return Array.from({ length: gridLayout.value }, (_, i) => ({
@@ -34,18 +34,23 @@ const gridSlots = computed(() => {
 
 const playerRefs = ref<Record<number, InstanceType<typeof MpegtsPlayer>>>({});
 const playerStatuses = ref<Record<number, PlayerStatus>>({});
+const playerStats = ref<Record<number, StatisticsInfo>>({});
+const playerMediaInfo = ref<Record<number, MediaInfo>>({});
 
 const activePlayerStatus = computed<PlayerStatus>(() => {
-  if (gridLayout.value === 1) {
-    return playerStatuses.value[0] ?? 'nosignal';
-  }
-  return 'playing';
+  const statuses = Object.values(playerStatuses.value);
+  if (statuses.length === 0) return 'nosignal';
+  if (statuses.includes('error')) return 'error';
+  if (statuses.includes('reconnecting')) return 'reconnecting';
+  if (statuses.includes('connecting')) return 'connecting';
+  if (statuses.includes('playing')) return 'playing';
+  return 'nosignal';
 });
 
 const statusColor = computed(() => {
   const map: Record<PlayerStatus, string> = {
     connecting: 'text-yellow-500',
-    destroying: 'text-gray-400',
+    reconnecting: 'text-amber-500',
     error: 'text-red-500',
     nosignal: 'text-gray-400',
     playing: 'text-green-500',
@@ -60,6 +65,7 @@ const statusText = computed(() => {
 });
 
 const config: MpegtsConfig = reactive({
+  enableWorker: true,
   enableStashBuffer: false,
   stashInitialSize: 384,
   liveBufferLatencyChasing: true,
@@ -79,12 +85,16 @@ function applyUrl() {
   inputUrl.value = inputUrl.value.trim();
 }
 
-function setPreset(url: string) {
-  inputUrl.value = url;
-}
-
 function onPlayerStatus(index: number, s: PlayerStatus) {
   playerStatuses.value[index] = s;
+}
+
+function onStatistics(index: number, info: StatisticsInfo) {
+  playerStats.value[index] = info;
+}
+
+function onMediaInfo(index: number, info: MediaInfo) {
+  playerMediaInfo.value[index] = info;
 }
 
 function playAll() {
@@ -96,6 +106,12 @@ function playAll() {
 function pauseAll() {
   for (const r of Object.values(playerRefs.value)) {
     r?.pause();
+  }
+}
+
+function reloadAll() {
+  for (const r of Object.values(playerRefs.value)) {
+    r?.reload();
   }
 }
 
@@ -114,6 +130,12 @@ const gridColsClass = computed(() => {
   if (gridLayout.value === 9) return 'grid-cols-3';
   if (gridLayout.value === 4) return 'grid-cols-2';
   return 'grid-cols-1';
+});
+
+const gridRowsClass = computed(() => {
+  if (gridLayout.value === 9) return 'grid-rows-3';
+  if (gridLayout.value === 4) return 'grid-rows-2';
+  return 'grid-rows-1';
 });
 </script>
 
@@ -177,7 +199,7 @@ const gridColsClass = computed(() => {
 
           <div
             v-if="gridLayout === 1"
-            class="aspect-video w-full rounded-lg border border-gray-700 bg-black shadow-sm"
+            class="relative aspect-video w-full overflow-hidden rounded-lg border border-gray-700 bg-black shadow-sm"
           >
             <MpegtsPlayer
               :ref="(el: any) => setPlayerRef(0, el)"
@@ -185,22 +207,51 @@ const gridColsClass = computed(() => {
               :muted="muted"
               :config="config"
               @status="(s: PlayerStatus) => onPlayerStatus(0, s)"
+              @statistics="(info: StatisticsInfo) => onStatistics(0, info)"
+              @mediaInfo="(info: MediaInfo) => onMediaInfo(0, info)"
             />
+            <div
+              v-if="playerMediaInfo[0]?.height"
+              class="pointer-events-none absolute right-1.5 top-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-mono text-emerald-300"
+            >
+              {{ playerMediaInfo[0].height }}p · {{ playerMediaInfo[0].videoCodec }}
+            </div>
+            <div
+              v-if="playerStats[0]"
+              class="pointer-events-none absolute bottom-1.5 left-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-mono text-gray-200"
+            >
+              ↓ {{ playerStats[0].speed ?? 0 }} KB/s · {{ playerStats[0].decodedFrames ?? 0 }}f · drop {{ playerStats[0].droppedFrames ?? 0 }}
+            </div>
           </div>
 
-          <div v-else class="grid w-full gap-2" :class="gridColsClass">
+          <div v-else class="grid h-[calc(100dvh-160px)] w-full gap-2" :class="[gridColsClass, gridRowsClass]">
             <div
               v-for="slot in gridSlots"
               :key="slot.id"
-              class="aspect-video rounded-lg border border-gray-700 bg-black shadow-sm"
+              class="relative h-full min-h-0 w-full overflow-hidden rounded-lg border border-gray-700 bg-black shadow-sm"
             >
               <MpegtsPlayer
                 :ref="(el: any) => setPlayerRef(slot.id, el)"
                 :url="inputUrl"
                 :muted="muted"
                 :config="config"
+                object-fit="cover"
                 @status="(s: PlayerStatus) => onPlayerStatus(slot.id, s)"
+                @statistics="(info: StatisticsInfo) => onStatistics(slot.id, info)"
+                @mediaInfo="(info: MediaInfo) => onMediaInfo(slot.id, info)"
               />
+              <div
+                v-if="playerMediaInfo[slot.id]?.height"
+                class="pointer-events-none absolute right-1.5 top-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-mono text-emerald-300"
+              >
+                {{ playerMediaInfo[slot.id].height }}p · {{ playerMediaInfo[slot.id].videoCodec }}
+              </div>
+              <div
+                v-if="playerStats[slot.id]"
+                class="pointer-events-none absolute bottom-1.5 left-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-mono text-gray-200"
+              >
+                ↓ {{ playerStats[slot.id].speed ?? 0 }} KB/s · {{ playerStats[slot.id].decodedFrames ?? 0 }}f · drop {{ playerStats[slot.id].droppedFrames ?? 0 }}
+              </div>
             </div>
           </div>
         </div>
@@ -221,19 +272,6 @@ const gridColsClass = computed(() => {
                 @click="applyUrl"
               >
                 {{ t('apply') }}
-              </button>
-            </div>
-            <div class="mt-3 flex flex-wrap gap-2">
-              <button
-                v-for="preset in presets"
-                :key="preset.label"
-                class="rounded border border-gray-700 px-2 py-1 text-xs transition-colors hover:border-blue-500 hover:text-blue-500"
-                :class="{
-                  'border-blue-500 text-blue-500': inputUrl === preset.url,
-                }"
-                @click="setPreset(preset.url)"
-              >
-                {{ preset.label }}
               </button>
             </div>
           </div>
@@ -258,6 +296,12 @@ const gridColsClass = computed(() => {
                 >
                   {{ t('pause') }}
                 </button>
+                <button
+                  class="flex-1 rounded border border-gray-700 px-3 py-1.5 text-xs hover:bg-gray-800"
+                  @click="reloadAll"
+                >
+                  {{ t('reload') }}
+                </button>
               </div>
             </div>
           </div>
@@ -265,6 +309,13 @@ const gridColsClass = computed(() => {
           <div class="rounded-lg border border-gray-700 bg-gray-900 p-4">
             <h3 class="m-0 mb-3 text-sm font-semibold">{{ t('liveParameters') }}</h3>
             <div class="flex flex-col gap-3">
+              <div class="flex items-center justify-between">
+                <span class="text-xs text-gray-400">
+                  {{ t('enableWorker') }}
+                </span>
+                <Switch v-model:checked="config.enableWorker" size="small" />
+              </div>
+
               <div class="flex items-center justify-between">
                 <span class="text-xs text-gray-400">
                   {{ t('enableStashBuffer') }}

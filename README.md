@@ -15,14 +15,25 @@ This monorepo contains two packages:
 
 ## Features
 
-- Full TypeScript support
-- Low-latency live stream playback optimized via mpegts.js MSE
-- Auto-play with muted fallback
-- Configurable video `objectFit` (fill, contain, cover, etc.)
-- Status overlay states: connecting, playing, error, no signal
-- Exposed `play()` / `pause()` methods for programmatic control
-- ESM + CJS dual format with type declarations
-- Transparent `MediaDataSource` and `Config` props passthrough
+**Performance**
+- Web Worker transmuxing on by default (`enableWorker`) — FLV remuxing off the main thread; the biggest lever for multi-view dashboards
+- Low-latency live tuning out of the box (`enableStashBuffer: false`, `liveSyncTargetLatency: 0.5`) for sub-second latency
+- Optional MSE-in-worker on Chrome (`enableWorkerForMSE`) — moves the entire MediaSource pipeline into a worker
+- CDN redirect reuse (`reuseRedirectedURL`) — reuses 301/302 across seek/reconnect, pure upside for HTTP live-FLV
+
+**Resilience**
+- Live auto-reconnect with exponential backoff — mpegts.js only auto-reconnects VOD; this wrapper owns live reconnect (emits `reconnecting`, skips permanent HTTP errors)
+- VOD early-EOF self-heal, surfaced via `onRecovered`
+
+**Observability**
+- Real-time telemetry: `onStatistics` (speed, dropped frames, fps ~every 600 ms) and `onMediaInfo` (resolution, codec, bitrate)
+
+**Control**
+- Imperative ref API — `play` / `pause` / `reload` / `seek` / volume / `getCurrentTime` / `getBufferedRanges` / `getStatistics`
+- mpegts.js escape hatch — `getPlayer()` for the raw instance, plus a re-exported `Mpegts` namespace (`getFeatureList`, `isSupported`, `Events`)
+
+**DX**
+- Full TypeScript, dual ESM/CJS with type declarations, zero CSS dependencies (inline styles), transparent `config` passthrough
 
 ---
 
@@ -57,13 +68,14 @@ const playerRef = ref()
     object-fit="fill"
     @status="(s: PlayerStatus) => console.log(s)"
     @error="(type, detail, info) => console.error(type, detail)"
+    @statistics="(s) => console.log('speed KB/s:', s.speed)"
   />
 </template>
 ```
 
 ### Styling
 
-The Vue 3 component ships with self-contained scoped styles — no Tailwind or CSS setup required. Status overlays (connecting, playing, error, no-signal) render correctly in any project out of the box.
+The Vue 3 component ships with self-contained inline styles (the spinner keyframe is injected once at runtime) — zero Tailwind or CSS setup required. Status overlays (connecting, reconnecting, playing, error, no-signal) render correctly in any project out of the box.
 
 ---
 
@@ -97,12 +109,15 @@ function App() {
       objectFit="fill"
       onStatus={(s: PlayerStatus) => console.log(s)}
       onError={(type, detail, info) => console.error(type, detail)}
+      onStatistics={(s) => console.log('speed KB/s:', s.speed)}
     />
   )
 }
 ```
 
-The React component uses inline styles with zero CSS dependencies.
+### Styling
+
+The React component uses inline styles — zero CSS dependency, works in any project.
 
 ---
 
