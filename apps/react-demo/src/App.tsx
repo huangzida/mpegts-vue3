@@ -112,10 +112,13 @@ export default function App() {
   const aggregateStatus = worstOf(statuses, gridLayout)
 
   const applyUrl = useCallback(() => {
-    const trimmed = inputUrl.trim()
-    setUrl(trimmed)
-    setInputUrl(trimmed)
-  }, [inputUrl])
+    const v = inputUrl.trim()
+    setInputUrl(v)
+    // ponytail: commit only when non-empty AND changed — no-op Apply must not
+    // trigger a player rebuild, and an empty draft is intentionally not
+    // committed (keeps the last good URL playing instead of going No Signal).
+    if (v && v !== url) setUrl(v)
+  }, [inputUrl, url])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {

@@ -21,6 +21,8 @@ const STORAGE_KEY = 'mpegts_demo_url';
 const gridLayout = ref<GridLayout>(1);
 const muted = ref(true);
 const inputUrl = ref(localStorage.getItem(STORAGE_KEY) || DEFAULT_URL);
+// draft holds in-progress edits; only applyUrl() commits it to inputUrl (which drives :url).
+const draftUrl = ref(inputUrl.value);
 
 watch(inputUrl, (v) => {
   v ? localStorage.setItem(STORAGE_KEY, v) : localStorage.removeItem(STORAGE_KEY);
@@ -108,7 +110,8 @@ const config: MpegtsConfig = reactive({
 });
 
 function applyUrl() {
-  inputUrl.value = inputUrl.value.trim();
+  const v = draftUrl.value.trim();
+  if (v && v !== inputUrl.value) inputUrl.value = v;
 }
 
 function onPlayerStatus(index: number, s: PlayerStatus) {
@@ -282,7 +285,7 @@ const gridColsClass = computed(() => {
             <h3 class="m-0 mb-3 text-sm font-semibold">{{ t('streamUrl') }}</h3>
             <div class="flex gap-2">
               <Input
-                v-model:value="inputUrl"
+                v-model:value="draftUrl"
                 placeholder="ws://host:port/live/stream.flv"
                 class="flex-1"
                 size="small"
