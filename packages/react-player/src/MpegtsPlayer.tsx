@@ -3,6 +3,7 @@
 import Mpegts from 'mpegts.js'
 import {
   forwardRef,
+  type CSSProperties,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -42,14 +43,14 @@ const RECONNECTABLE_ERRORS = new Set(['Exception', 'ConnectingTimeout', 'Unrecov
 // ponytail: static styles hoisted to module scope (allocated once, not per
 // render) and the one keyframe injected once — mirrors the Vue sibling's
 // ensureKeyframe, instead of rendering a <style> per instance.
-const containerStyle: React.CSSProperties = {
+const containerStyle: CSSProperties = {
   position: 'relative',
   width: '100%',
   height: '100%',
   backgroundColor: '#000',
   overflow: 'hidden',
 }
-const overlayBase: React.CSSProperties = {
+const overlayBase: CSSProperties = {
   position: 'absolute',
   inset: 0,
   display: 'flex',
@@ -57,10 +58,10 @@ const overlayBase: React.CSSProperties = {
   alignItems: 'center',
   justifyContent: 'center',
 }
-const noSignalOverlay: React.CSSProperties = { ...overlayBase, backgroundColor: 'rgba(0, 0, 0, 1)' }
-const connectingOverlay: React.CSSProperties = { ...overlayBase, backgroundColor: 'rgba(0, 0, 0, 0.6)' }
-const errorOverlay: React.CSSProperties = { ...overlayBase, backgroundColor: 'rgba(0, 0, 0, 0.6)' }
-const spinnerStyle: React.CSSProperties = {
+const noSignalOverlay: CSSProperties = { ...overlayBase, backgroundColor: 'rgba(0, 0, 0, 1)' }
+const connectingOverlay: CSSProperties = { ...overlayBase, backgroundColor: 'rgba(0, 0, 0, 0.6)' }
+const errorOverlay: CSSProperties = { ...overlayBase, backgroundColor: 'rgba(0, 0, 0, 0.6)' }
+const spinnerStyle: CSSProperties = {
   width: 32,
   height: 32,
   borderRadius: '50%',
@@ -82,7 +83,7 @@ export interface MpegtsPlayerProps {
   autoplay?: boolean
   isLive?: boolean
   muted?: boolean
-  objectFit?: React.CSSProperties['objectFit']
+  objectFit?: CSSProperties['objectFit']
   type?: string
   cors?: boolean
   withCredentials?: boolean
@@ -392,7 +393,7 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       ensureKeyframe()
     }, [])
 
-    const videoStyle: React.CSSProperties = {
+    const videoStyle: CSSProperties = {
       position: 'absolute',
       inset: 0,
       width: '100%',
