@@ -1,0 +1,180 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, cleanup, act } from '@testing-library/react';
+import { createRef } from 'react';
+import { MpegtsPlayer, type MpegtsPlayerRef } from '../src/MpegtsPlayer';
+
+const { recorder, MockPlayer } = vi.hoisted(() => {
+  type Deferred = {
+    promise: Promise<unknown>;
+    resolve: (v?: unknown) => void;
+    reject: (e?: unknown) => void;
+  };
+  function createDeferred(): Deferred {
+    let resolve!: (v?: unknown) => void;
+    let reject!: (e?: unknown) => void;
+    const promise = new Promise<unknown>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  class MockPlayer {
+    calls: string[] = [];
+    source: any;
+    config: any;
+    errorCb: ((t: string, d: string, i: unknown) => void) | null = null;
+    playDeferred: Deferred | null = null;
+    constructor(source: any, config: any) {
+      this.source = source;
+      this.config = config;
+      recorder.players.push(this);
+    }
+    attachMediaElement() {
+      this.calls.push('attachMediaElement');
+    }
+    on(event: string, cb: any) {
+      if (event === 'error') this.errorCb = cb;
+    }
+    load() {
+      this.calls.push('load');
+    }
+    play() {
+      this.calls.push('play');
+      this.playDeferred = createDeferred();
+      return this.playDeferred.promise;
+    }
+    pause() {
+      this.calls.push('pause');
+    }
+    unload() {
+      this.calls.push('unload');
+    }
+    detachMediaElement() {
+      this.calls.push('detachMediaElement');
+    }
+    destroy() {
+      this.calls.push('destroy');
+    }
+  }
+
+  const recorder = { players: [] as MockPlayer[], isSupported: true };
+  return { recorder, MockPlayer };
+});
+
+vi.mock('mpegts.js', () => ({
+  default: {
+    isSupported: () => recorder.isSupported,
+    createPlayer: (source: any, config: any) => new MockPlayer(source, config),
+    Events: { ERROR: 'error' },
+  },
+}));
+
+describe('MpegtsPlayer (React)', () => {
+  const statuses: string[] = [];
+  const errors: Array<[string, string, unknown]> = [];
+  const onStatus = (s: string) => statuses.push(s);
+  const onError = (t: string, d: string, i: unknown) => errors.push([t, d, i]);
+
+  beforeEach(() => {
+    recorder.players.length = 0;
+    recorder.isSupported = true;
+    statuses.length = 0;
+    errors.length = 0;
+  });
+  afterEach(() => cleanup());
+
+  const renderIt = (props: Record<string, unknown> = {}) => {
+    const ref = createRef<MpegtsPlayerRef>();
+    const utils = render(
+      <MpegtsPlayer
+        ref={ref}
+        url="ws://x/live.flv"
+        onStatus={onStatus}
+        onError={onError}
+        {...props}
+      />,
+    );
+    return { ref, ...utils };
+  };
+
+  it('mount: lifecycle order + load-bearing source fields (hasVideo guard)', () => {
+    renderIt();
+    expect(recorder.players).toHaveLength(1);
+    const p = recorder.players[0];
+    expect(p.calls).toEqual(['attachMediaElement', 'load', 'play']);
+    expect(p.source).toMatchObject({
+      url: 'ws://x/live.flv',
+      isLive: true,
+      type: 'mse',
+      hasAudio: true,
+      hasVideo: true, // ← the black-screen regression lived here
+    });
+  });
+
+  it('unmount: cleanup order pause→unload→detach→destroy', () => {
+    const { unmount } = renderIt();
+    const p = recorder.players[0];
+    p.calls.length = 0;
+    unmount();
+    expect(p.calls).toEqual(['pause', 'unload', 'detachMediaElement', 'destroy']);
+  });
+
+  it('config merge: user key wins, default key present', () => {
+    renderIt({ config: { enableStashBuffer: true } });
+    const cfg = recorder.players[0].config;
+    expect(cfg.enableStashBuffer).toBe(true);
+    expect(cfg.liveSync).toBe(true);
+  });
+
+  it('gen guard: stale play promise after url change does not emit playing', async () => {
+    const { rerender } = renderIt({ url: 'url1' });
+    const p1 = recorder.players[0];
+    expect(statuses.includes('playing')).toBe(false);
+
+    // change a create-affecting prop → effect cleanup (gen++) + recreate
+    rerender(<MpegtsPlayer url="url2" onStatus={onStatus} />);
+    const p2 = recorder.players[1];
+
+    await act(async () => {
+      p1.playDeferred!.resolve(); // stale generation → must bail
+    });
+    expect(statuses.filter((s) => s === 'playing')).toHaveLength(0);
+
+    await act(async () => {
+      p2.playDeferred!.resolve(); // current generation → emits playing
+    });
+    expect(statuses.filter((s) => s === 'playing')).toHaveLength(1);
+  });
+
+  it('sourceSignature: changing config recreates the player', () => {
+    const { rerender } = renderIt();
+    expect(recorder.players).toHaveLength(1);
+    rerender(<MpegtsPlayer url="ws://x/live.flv" onStatus={onStatus} config={{ enableStashBuffer: true }} />);
+    expect(recorder.players).toHaveLength(2);
+  });
+
+  it('ref methods: reload() recreates, getPlayer() returns instance', () => {
+    const { ref } = renderIt();
+    expect(recorder.players).toHaveLength(1);
+    expect(ref.current?.getPlayer()).toBe(recorder.players[0]);
+    act(() => {
+      ref.current?.reload();
+    });
+    expect(recorder.players).toHaveLength(2);
+  });
+
+  it('isSupported() false (MSE type) → error status + NotSupportedError, no player', () => {
+    recorder.isSupported = false;
+    renderIt();
+    expect(recorder.players).toHaveLength(0);
+    expect(statuses.includes('error')).toBe(true);
+    expect(errors[0]?.[0]).toBe('NotSupportedError');
+  });
+
+  it('non-MSE type bypasses the MSE gate (NativePlayer path)', () => {
+    recorder.isSupported = false;
+    renderIt({ type: 'mp4' });
+    expect(recorder.players).toHaveLength(1);
+  });
+});

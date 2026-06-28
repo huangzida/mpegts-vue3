@@ -18,6 +18,7 @@
     "publish": false
   },
   "hooks": {
+    "before:init": "pnpm -r run typecheck && pnpm -r run test",
     "after:bump": "pnpm -r --filter='./packages/*' exec npm pkg set version=${version}"
   }
 }

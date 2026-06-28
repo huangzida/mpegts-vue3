@@ -1,3 +1,5 @@
+// Client-only: mpegts.js touches `window` at module load. SSR consumers must
+// wrap this component (Nuxt <ClientOnly> / next/dynamic { ssr: false }).
 import Mpegts from 'mpegts.js'
 import {
   forwardRef,
@@ -25,6 +27,49 @@ const DEFAULT_CONFIG: MpegtsConfig = {
   fixAudioTimestampGap: true,
 }
 
+// mpegts.js createPlayer() routes these types to MSEPlayer (needs MediaSource);
+// any other type routes to NativePlayer (native <video>, no MSE). Only gate on
+// isSupported() for the MSE-required set.
+const MSE_REQUIRED_TYPES: string[] = ['mse', 'mpegts', 'm2ts', 'flv']
+
+// ponytail: static styles hoisted to module scope (allocated once, not per
+// render) and the one keyframe injected once — mirrors the Vue sibling's
+// ensureKeyframe, instead of rendering a <style> per instance.
+const containerStyle: React.CSSProperties = {
+  position: 'relative',
+  width: '100%',
+  height: '100%',
+  backgroundColor: '#000',
+  overflow: 'hidden',
+}
+const overlayBase: React.CSSProperties = {
+  position: 'absolute',
+  inset: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  justifyContent: 'center',
+}
+const noSignalOverlay: React.CSSProperties = { ...overlayBase, backgroundColor: 'rgba(0, 0, 0, 1)' }
+const connectingOverlay: React.CSSProperties = { ...overlayBase, backgroundColor: 'rgba(0, 0, 0, 0.6)' }
+const errorOverlay: React.CSSProperties = { ...overlayBase, backgroundColor: 'rgba(0, 0, 0, 0.6)' }
+const spinnerStyle: React.CSSProperties = {
+  width: 32,
+  height: 32,
+  borderRadius: '50%',
+  border: '2px solid #3b82f6',
+  borderTopColor: 'transparent',
+  animation: 'mpegts-spin 1s linear infinite',
+}
+let keyframeInjected = false
+function ensureKeyframe() {
+  if (keyframeInjected || typeof document === 'undefined') return
+  keyframeInjected = true
+  const el = document.createElement('style')
+  el.textContent = '@keyframes mpegts-spin { to { transform: rotate(360deg) } }'
+  document.head.appendChild(el)
+}
+
 export interface MpegtsPlayerProps {
   url: string
   autoplay?: boolean
@@ -47,6 +92,9 @@ export interface MpegtsPlayerProps {
 export interface MpegtsPlayerRef {
   play: () => void
   pause: () => void
+  reload: () => void
+  setMuted: (muted: boolean) => void
+  getPlayer: () => Mpegts.Player | null
 }
 
 export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
@@ -61,7 +109,7 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       cors,
       withCredentials,
       hasAudio = true,
-      hasVideo,
+      hasVideo = true,
       duration,
       filesize,
       showLoading = true,
@@ -78,15 +126,30 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
     onStatusRef.current = onStatus
     const onErrorRef = useRef(onError)
     onErrorRef.current = onError
-    const configRef = useRef(config)
-    configRef.current = config
-    const autoplayRef = useRef(autoplay)
-    autoplayRef.current = autoplay
-    const mutedRef = useRef(muted)
-    mutedRef.current = muted
 
-    const propsRef = useRef({ type, isLive, cors, withCredentials, hasAudio, hasVideo, duration, filesize })
-    propsRef.current = { type, isLive, cors, withCredentials, hasAudio, hasVideo, duration, filesize }
+    // ponytail: generation guard — bump on every destroy/cleanup so in-flight
+    // autoplay promise callbacks bail instead of setState after unmount or
+    // writing status for a stale player (P0-3).
+    const genRef = useRef(0)
+
+    // ponytail: JSON signature collapses all create-affecting props into one
+    // effect dep, so config/source changes now recreate the player instead of
+    // being silently ignored (P0-2). String compare = value equality.
+    const sourceSignature = JSON.stringify({
+      url,
+      type,
+      isLive,
+      cors,
+      withCredentials,
+      hasAudio,
+      hasVideo,
+      duration,
+      filesize,
+      config,
+    })
+
+    // Imperative reload: bumping this re-runs the create effect (reconnect).
+    const [reloadNonce, setReloadNonce] = useState(0)
 
     const updateStatus = useCallback((s: PlayerStatus) => {
       setStatus(s)
@@ -96,16 +159,17 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
     const doPlay = useCallback(() => {
       const player = playerRef.current
       if (!player || !videoRef.current) return
-      videoRef.current.muted = mutedRef.current
+      const myGen = genRef.current
+      videoRef.current.muted = muted
       const result = player.play()
       if (result instanceof Promise) {
         result
-          .then(() => updateStatus('playing'))
-          .catch(() => updateStatus('stopped'))
+          .then(() => { if (myGen === genRef.current) updateStatus('playing') })
+          .catch(() => { if (myGen === genRef.current) updateStatus('stopped') })
       } else {
         updateStatus('playing')
       }
-    }, [updateStatus])
+    }, [updateStatus, muted])
 
     const doPause = useCallback(() => {
       const player = playerRef.current
@@ -114,32 +178,44 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       updateStatus('stopped')
     }, [updateStatus])
 
-    useImperativeHandle(ref, () => ({ play: doPlay, pause: doPause }), [doPlay, doPause])
+    const reload = useCallback(() => setReloadNonce((n) => n + 1), [])
+    const setMuted = useCallback((m: boolean) => {
+      if (videoRef.current) videoRef.current.muted = m
+    }, [])
+    const getPlayer = useCallback((): Mpegts.Player | null => playerRef.current, [])
+
+    useImperativeHandle(
+      ref,
+      () => ({ play: doPlay, pause: doPause, reload, setMuted, getPlayer }),
+      [doPlay, doPause, reload, setMuted, getPlayer],
+    )
 
     useEffect(() => {
       if (!url || !videoRef.current) return
-      if (!Mpegts.isSupported()) {
+      if (MSE_REQUIRED_TYPES.includes(type) && !Mpegts.isSupported()) {
         updateStatus('error')
+        onErrorRef.current?.('NotSupportedError', 'MediaSource Extensions (MSE) are not supported by this browser', { type })
         return
       }
 
+      const myGen = ++genRef.current
+
       updateStatus('connecting')
 
-      const currentProps = propsRef.current
-      const mergedConfig: MpegtsConfig = { ...DEFAULT_CONFIG, ...configRef.current }
+      const mergedConfig: MpegtsConfig = { ...DEFAULT_CONFIG, ...config }
       const source: MediaDataSource = {
-        type: currentProps.type ?? 'mse',
-        isLive: currentProps.isLive,
+        type,
+        isLive,
         url,
       }
-      if (currentProps.cors !== undefined) source.cors = currentProps.cors
-      if (currentProps.withCredentials !== undefined) source.withCredentials = currentProps.withCredentials
-      // 默认 hasAudio: true（via 解构默认值），避免某些 FLV 流（如 ZLMediaKit）
-      // 的 header flag 未标记音频导致音频包被丢弃
-      source.hasAudio = currentProps.hasAudio
-      if (currentProps.hasVideo !== undefined) source.hasVideo = currentProps.hasVideo
-      if (currentProps.duration !== undefined) source.duration = currentProps.duration
-      if (currentProps.filesize !== undefined) source.filesize = currentProps.filesize
+      if (cors !== undefined) source.cors = cors
+      if (withCredentials !== undefined) source.withCredentials = withCredentials
+      // 默认 hasAudio/hasVideo: true，避免某些 FLV 流（如 ZLMediaKit）
+      // 的 header flag 未标记音/视频导致对应包被丢弃（表现为黑屏/无声）
+      source.hasAudio = hasAudio
+      source.hasVideo = hasVideo
+      if (duration !== undefined) source.duration = duration
+      if (filesize !== undefined) source.filesize = filesize
 
       const player = Mpegts.createPlayer(source, mergedConfig)
       playerRef.current = player
@@ -149,6 +225,7 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       player.on(
         Mpegts.Events.ERROR,
         (errorType: string, errorDetail: string, errorInfo: any) => {
+          if (myGen !== genRef.current) return
           updateStatus('error')
           onErrorRef.current?.(errorType, errorDetail, errorInfo)
         },
@@ -156,19 +233,37 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
 
       player.load()
 
-      if (autoplayRef.current) {
-        videoRef.current.muted = mutedRef.current
+      if (autoplay) {
+        videoRef.current.muted = muted
         const result = player.play()
         if (result instanceof Promise) {
           result
-            .then(() => updateStatus('playing'))
-            .catch(() => updateStatus('stopped'))
+            .then(() => { if (myGen === genRef.current) updateStatus('playing') })
+            .catch(() => {
+              // 浏览器自动播放策略拦截了带声音的播放，降级为静音重试
+              // （与 video.js 的 manualAutoplay_("any") 行为保持一致）
+              if (myGen !== genRef.current) return
+              if (!muted && videoRef.current && player) {
+                videoRef.current.muted = true
+                const fallbackResult = player.play()
+                if (fallbackResult instanceof Promise) {
+                  fallbackResult
+                    .then(() => { if (myGen === genRef.current) updateStatus('playing') })
+                    .catch(() => { if (myGen === genRef.current) updateStatus('stopped') })
+                } else {
+                  updateStatus('playing')
+                }
+              } else {
+                updateStatus('stopped')
+              }
+            })
         } else {
           updateStatus('playing')
         }
       }
 
       return () => {
+        genRef.current++
         try {
           player.pause()
           player.unload()
@@ -177,9 +272,12 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
         } catch {
           // ignore
         }
-        playerRef.current = null
+        if (playerRef.current === player) playerRef.current = null
       }
-    }, [url, updateStatus])
+      // Create-affecting props are captured by `sourceSignature`; `reloadNonce`
+      // forces a rebuild. autoplay/muted are read at create time only.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sourceSignature, reloadNonce])
 
     useEffect(() => {
       if (videoRef.current) {
@@ -187,13 +285,9 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       }
     }, [muted])
 
-    const containerStyle: React.CSSProperties = {
-      position: 'relative',
-      width: '100%',
-      height: '100%',
-      backgroundColor: '#000',
-      overflow: 'hidden',
-    }
+    useEffect(() => {
+      ensureKeyframe()
+    }, [])
 
     const videoStyle: React.CSSProperties = {
       position: 'absolute',
@@ -201,39 +295,6 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       width: '100%',
       height: '100%',
       objectFit,
-    }
-
-    const overlayBase: React.CSSProperties = {
-      position: 'absolute',
-      inset: 0,
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-    }
-
-    const noSignalOverlay: React.CSSProperties = {
-      ...overlayBase,
-      backgroundColor: 'rgba(0, 0, 0, 1)',
-    }
-
-    const connectingOverlay: React.CSSProperties = {
-      ...overlayBase,
-      backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    }
-
-    const errorOverlay: React.CSSProperties = {
-      ...overlayBase,
-      backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    }
-
-    const spinnerStyle: React.CSSProperties = {
-      width: 32,
-      height: 32,
-      borderRadius: '50%',
-      border: '2px solid #3b82f6',
-      borderTopColor: 'transparent',
-      animation: 'mpegts-spin 1s linear infinite',
     }
 
     const showNoSignal = status === 'nosignal' || !url
@@ -314,8 +375,6 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
             </span>
           </div>
         )}
-
-        <style>{`@keyframes mpegts-spin { to { transform: rotate(360deg) } }`}</style>
       </div>
     )
   },

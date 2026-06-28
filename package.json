@@ -7,6 +7,8 @@
     "build": "pnpm -r run build",
     "dev": "pnpm -C apps/demo dev",
     "dev:react": "pnpm -C apps/react-demo dev",
+    "test": "pnpm -r run test",
+    "typecheck": "pnpm -r run typecheck",
     "release": "release-it"
   },
   "engines": {
@@ -15,6 +17,8 @@
   "packageManager": "pnpm@9.15.4",
   "devDependencies": {
     "@release-it/conventional-changelog": "^11.0.0",
-    "release-it": "^20.0.1"
+    "jsdom": "^29.1.1",
+    "release-it": "^20.0.1",
+    "vitest": "^4.1.9"
   }
 }

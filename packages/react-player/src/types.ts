@@ -6,7 +6,6 @@ export type MpegtsConfig = Mpegts.Config
 
 export type PlayerStatus =
   | 'connecting'
-  | 'destroying'
   | 'error'
   | 'nosignal'
   | 'playing'

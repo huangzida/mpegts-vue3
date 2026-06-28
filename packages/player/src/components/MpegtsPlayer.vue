@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import type { Ref } from 'vue';
+import type { CSSProperties, Ref } from 'vue';
 
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 
-import Mpegts from 'mpegts.js';
-
 import type { MediaDataSource, MpegtsConfig, PlayerStatus } from '../types';
+
+// Client-only: mpegts.js touches `window` at module load. SSR consumers must
+// wrap this component (Nuxt <ClientOnly> / next/dynamic { ssr: false }).
+import Mpegts from 'mpegts.js';
 
 const DEFAULT_CONFIG: MpegtsConfig = {
   enableStashBuffer: false,
@@ -21,6 +23,12 @@ const DEFAULT_CONFIG: MpegtsConfig = {
   autoCleanupMinBackwardDuration: 10,
   fixAudioTimestampGap: true,
 };
+
+// mpegts.js createPlayer() routes these types to MSEPlayer (needs MediaSource);
+// any other type (e.g. 'mp4') routes to NativePlayer (native <video>, no MSE).
+// Only gate on isSupported() for the MSE-required set — otherwise we wrongly
+// block native playback on MSE-less browsers (e.g. iOS Safari playing an mp4).
+const MSE_REQUIRED_TYPES: string[] = ['mse', 'mpegts', 'm2ts', 'flv'];
 
 interface Props {
   url: string;
@@ -44,8 +52,8 @@ const props = withDefaults(defineProps<Props>(), {
   isLive: true,
   muted: true,
   type: 'mse',
-  hasVideo: true,
   hasAudio: true,
+  hasVideo: true,
   showLoading: true,
   config: () => ({}),
 });
@@ -58,14 +66,78 @@ const emit = defineEmits<{
 const videoRef = ref<HTMLVideoElement>() as Ref<HTMLVideoElement>;
 const status = ref<PlayerStatus>('nosignal');
 let player: Mpegts.Player | null = null;
+// ponytail: generation guard — bump on every destroy so in-flight autoplay
+// promise callbacks bail instead of writing stale status / resurrecting a
+// dead player. One variable kills the whole stale-closure class (P0-3).
+let gen = 0;
+let recreateTimer: ReturnType<typeof setTimeout> | null = null;
 
-const videoStyle = computed(() => ({
+// Collapse rapid prop mutations (e.g. dragging a config slider) into a single
+// recreate — deep watcher fires per field, this debounces to one rebuild (P0-1).
+function scheduleRecreate() {
+  if (recreateTimer) clearTimeout(recreateTimer);
+  recreateTimer = setTimeout(() => {
+    recreateTimer = null;
+    createPlayer();
+  }, 300);
+}
+
+const videoStyle = computed<CSSProperties>(() => ({
+  position: 'absolute',
+  inset: 0,
+  width: '100%',
+  height: '100%',
   objectFit: props.objectFit ?? 'fill',
 }));
 
-function destroyPlayer() {
+// ponytail: rolldown removed CSS bundling, so styles are inlined for zero-CSS-deps
+// parity with the React sibling. The one keyframe is injected at runtime.
+const containerStyle: CSSProperties = {
+  position: 'relative',
+  width: '100%',
+  height: '100%',
+  backgroundColor: '#000',
+  overflow: 'hidden',
+};
+const overlayBase: CSSProperties = {
+  position: 'absolute',
+  inset: 0,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+};
+const noSignalOverlay: CSSProperties = { ...overlayBase, flexDirection: 'column', backgroundColor: 'rgb(17 24 39 / 0.9)' };
+const maskOverlay: CSSProperties = { ...overlayBase, backgroundColor: 'rgb(0 0 0 / 0.6)' };
+const connectingInner: CSSProperties = { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem' };
+const errorInner: CSSProperties = { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' };
+const spinnerStyle: CSSProperties = {
+  width: '2rem',
+  height: '2rem',
+  borderRadius: '9999px',
+  border: '2px solid #3b82f6',
+  borderTopColor: 'transparent',
+  animation: 'mpegts-spin 1s linear infinite',
+};
+const noSignalTextStyle: CSSProperties = { fontSize: '0.875rem', fontWeight: 500, color: '#9ca3af', letterSpacing: '0.05em', textTransform: 'uppercase' };
+const connectingTextStyle: CSSProperties = { fontSize: '0.875rem', color: '#d1d5db' };
+const errorTextStyle: CSSProperties = { fontSize: '0.875rem', color: '#f87171' };
+
+let keyframeInjected = false;
+function ensureKeyframe() {
+  if (keyframeInjected || typeof document === 'undefined') return;
+  keyframeInjected = true;
+  const el = document.createElement('style');
+  el.textContent = '@keyframes mpegts-spin { to { transform: rotate(360deg) } }';
+  document.head.appendChild(el);
+}
+
+function destroyPlayer(silent = false) {
+  gen++;
+  if (recreateTimer) {
+    clearTimeout(recreateTimer);
+    recreateTimer = null;
+  }
   if (!player) return;
-  status.value = 'destroying';
   try {
     player.pause();
     player.unload();
@@ -75,20 +147,27 @@ function destroyPlayer() {
     // ignore cleanup errors
   }
   player = null;
-  status.value = 'nosignal';
+  if (!silent) {
+    status.value = 'nosignal';
+    emit('status', 'nosignal');
+  }
 }
 
 function play() {
   if (!player) return;
+  const myGen = gen;
+  // Re-sync muted on resume (pause() intentionally leaves it untouched).
   videoRef.value.muted = props.muted;
   const result = player.play();
   if (result instanceof Promise) {
     result
       .then(() => {
+        if (myGen !== gen) return;
         status.value = 'playing';
         emit('status', 'playing');
       })
       .catch(() => {
+        if (myGen !== gen) return;
         status.value = 'stopped';
         emit('status', 'stopped');
       });
@@ -105,7 +184,19 @@ function pause() {
   emit('status', 'stopped');
 }
 
-defineExpose({ play, pause });
+function reload() {
+  createPlayer();
+}
+
+function setMuted(muted: boolean) {
+  if (videoRef.value) videoRef.value.muted = muted;
+}
+
+function getPlayer(): Mpegts.Player | null {
+  return player;
+}
+
+defineExpose({ play, pause, reload, setMuted, getPlayer });
 
 function buildMediaDataSource(): MediaDataSource {
   const source: MediaDataSource = {
@@ -115,22 +206,24 @@ function buildMediaDataSource(): MediaDataSource {
   };
   if (props.cors !== undefined) source.cors = props.cors;
   if (props.withCredentials !== undefined) source.withCredentials = props.withCredentials;
-  // 默认 hasAudio: true（via withDefaults），避免某些 FLV 流（如 ZLMediaKit）
-  // 的 header flag 未标记音频导致音频包被丢弃
+  // 默认 hasAudio/hasVideo: true，避免某些 FLV 流（如 ZLMediaKit）
+  // 的 header flag 未标记音/视频导致对应包被丢弃（表现为黑屏/无声）
   source.hasAudio = props.hasAudio;
-  if (props.hasVideo !== undefined) source.hasVideo = props.hasVideo;
+  source.hasVideo = props.hasVideo;
   if (props.duration !== undefined) source.duration = props.duration;
   if (props.filesize !== undefined) source.filesize = props.filesize;
   return source;
 }
 
 function createPlayer() {
-  destroyPlayer();
+  destroyPlayer(true);
+  const myGen = gen;
 
   if (!props.url || !videoRef.value) return;
-  if (!Mpegts.isSupported()) {
+  if (MSE_REQUIRED_TYPES.includes(props.type) && !Mpegts.isSupported()) {
     status.value = 'error';
     emit('status', 'error');
+    emit('error', 'NotSupportedError', 'MediaSource Extensions (MSE) are not supported by this browser', { type: props.type });
     return;
   }
 
@@ -147,6 +240,7 @@ function createPlayer() {
   player.on(
     Mpegts.Events.ERROR,
     (errorType: string, errorDetail: string, errorInfo: any) => {
+      if (myGen !== gen) return;
       status.value = 'error';
       emit('status', 'error');
       emit('error', errorType, errorDetail, errorInfo);
@@ -161,22 +255,26 @@ function createPlayer() {
     if (result instanceof Promise) {
       result
         .then(() => {
+          if (myGen !== gen) return;
           status.value = 'playing';
           emit('status', 'playing');
         })
         .catch(() => {
           // 浏览器自动播放策略拦截了带声音的播放，降级为静音重试
           // （与 video.js 的 manualAutoplay_("any") 行为保持一致）
+          if (myGen !== gen) return;
           if (!props.muted && videoRef.value && player) {
             videoRef.value.muted = true;
             const fallbackResult = player.play();
             if (fallbackResult instanceof Promise) {
               fallbackResult
                 .then(() => {
+                  if (myGen !== gen) return;
                   status.value = 'playing';
                   emit('status', 'playing');
                 })
                 .catch(() => {
+                  if (myGen !== gen) return;
                   status.value = 'stopped';
                   emit('status', 'stopped');
                 });
@@ -200,11 +298,9 @@ watch(
   () => props.url,
   (newUrl) => {
     if (newUrl) {
-      createPlayer();
+      scheduleRecreate();
     } else {
       destroyPlayer();
-      status.value = 'nosignal';
-      emit('status', 'nosignal');
     }
   },
 );
@@ -213,7 +309,7 @@ watch(
   () => props.config,
   () => {
     if (props.url) {
-      createPlayer();
+      scheduleRecreate();
     }
   },
   { deep: true },
@@ -232,12 +328,13 @@ watch(
   ],
   () => {
     if (props.url) {
-      createPlayer();
+      scheduleRecreate();
     }
   },
 );
 
 onMounted(() => {
+  ensureKeyframe();
   if (props.url) {
     createPlayer();
   }
@@ -258,60 +355,44 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="mpegts-player relative w-full h-full bg-black overflow-hidden">
+  <div class="mpegts-player" :style="containerStyle">
     <video
       ref="videoRef"
-      class="absolute inset-0 w-full h-full"
       :style="videoStyle"
       @click.prevent
       @contextmenu.prevent
     ></video>
-    <div
-      v-if="status === 'nosignal' || !url"
-      class="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/90"
-    >
-      <div class="mb-3 flex items-center gap-2 text-gray-400">
-        <svg
-          class="size-10"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          viewBox="0 0 24 24"
-        >
-          <path
-            d="m15.75 10.5 4.72-4.72a.75.75 0 0 1 1.28.53v11.38a.75.75 0 0 1-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25h-9A2.25 2.25 0 0 0 2.25 7.5v9a2.25 2.25 0 0 0 2.25 2.25Z"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-          <path
-            d="M18 12 6 12M18 8 6 8M18 16l-12 0"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
-      </div>
-      <span class="text-sm font-medium text-gray-400 tracking-wider uppercase">
-        No Signal
-      </span>
+    <div v-if="status === 'nosignal' || !url" :style="noSignalOverlay">
+      <svg
+        :style="{ width: '2.5rem', height: '2.5rem', marginBottom: '0.75rem', color: '#9ca3af' }"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+        viewBox="0 0 24 24"
+      >
+        <path
+          d="m15.75 10.5 4.72-4.72a.75.75 0 0 1 1.28.53v11.38a.75.75 0 0 1-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25h-9A2.25 2.25 0 0 0 2.25 7.5v9a2.25 2.25 0 0 0 2.25 2.25Z"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+        <path
+          d="M18 12 6 12M18 8 6 8M18 16l-12 0"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </svg>
+      <span :style="noSignalTextStyle">No Signal</span>
     </div>
-    <div
-      v-if="status === 'connecting' && showLoading"
-      class="absolute inset-0 flex items-center justify-center bg-black/60"
-    >
-      <div class="flex flex-col items-center gap-3">
-        <div
-          class="size-8 rounded-full border-2 border-blue-500 border-t-transparent animate-spin"
-        ></div>
-        <span class="text-sm text-gray-300">Connecting...</span>
+    <div v-if="status === 'connecting' && showLoading" :style="maskOverlay">
+      <div :style="connectingInner">
+        <div :style="spinnerStyle"></div>
+        <span :style="connectingTextStyle">Connecting...</span>
       </div>
     </div>
-    <div
-      v-if="status === 'error' && url"
-      class="absolute inset-0 flex items-center justify-center bg-black/60"
-    >
-      <div class="flex flex-col items-center gap-2">
+    <div v-if="status === 'error' && url" :style="maskOverlay">
+      <div :style="errorInner">
         <svg
-          class="size-8 text-red-400"
+          :style="{ width: '2rem', height: '2rem', color: '#f87171' }"
           fill="none"
           stroke="currentColor"
           stroke-width="1.5"
@@ -323,7 +404,7 @@ onUnmounted(() => {
             stroke-linejoin="round"
           />
         </svg>
-        <span class="text-sm text-red-400">Connection Failed</span>
+        <span :style="errorTextStyle">Connection Failed</span>
       </div>
     </div>
   </div>

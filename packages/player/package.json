@@ -37,14 +37,18 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsdown && node -e \"const fs=require('fs'),d='dist';fs.readdirSync(d).filter(f=>f.startsWith('index-')&&f.endsWith('.d.ts')).forEach(f=>fs.renameSync(d+'/'+f,d+'/index.d.ts'));fs.readdirSync(d).filter(f=>f.startsWith('index-')&&f.endsWith('.d.cts')).forEach(f=>fs.renameSync(d+'/'+f,d+'/index.d.cts'))\"",
-    "dev": "tsdown --watch"
+    "build": "tsdown && node ../../scripts/fix-dts.mjs",
+    "dev": "tsdown --watch",
+    "test": "vitest run",
+    "typecheck": "vue-tsc --noEmit"
   },
   "peerDependencies": {
     "mpegts.js": "^1.8.0",
     "vue": "^3.4.0"
   },
   "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.0",
+    "@vue/test-utils": "^2.4.11",
     "mpegts.js": "^1.8.0",
     "tsdown": "^0.12.0",
     "typescript": "^5.8.0",

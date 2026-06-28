@@ -44,6 +44,12 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Typecheck
+        run: pnpm -r run typecheck
+
+      - name: Test
+        run: pnpm -r run test
+
       - name: Build mpegts-vue3
         if: github.event.inputs.package == 'all' || github.event.inputs.package == 'mpegts-vue3' || github.event_name == 'push'
         run: pnpm run build

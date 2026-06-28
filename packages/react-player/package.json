@@ -36,16 +36,22 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsdown && node -e \"const fs=require('fs'),d='dist';fs.readdirSync(d).filter(f=>f.startsWith('index-')&&f.endsWith('.d.ts')).forEach(f=>fs.renameSync(d+'/'+f,d+'/index.d.ts'));fs.readdirSync(d).filter(f=>f.startsWith('index-')&&f.endsWith('.d.cts')).forEach(f=>fs.renameSync(d+'/'+f,d+'/index.d.cts'))\""
+    "build": "tsdown && node ../../scripts/fix-dts.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
     "mpegts.js": "^1.8.0",
     "react": "^17.0.0 || ^18.0.0 || ^19.0.0"
   },
   "devDependencies": {
-    "@types/react": "^17.0.80",
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.3.0",
     "mpegts.js": "^1.8.0",
-    "react": "^17.0.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "tsdown": "^0.12.0",
     "typescript": "^5.8.0"
   }
