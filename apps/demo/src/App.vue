@@ -37,6 +37,12 @@ const playerStatuses = ref<Record<number, PlayerStatus>>({});
 const playerStats = ref<Record<number, StatisticsInfo>>({});
 const playerMediaInfo = ref<Record<number, MediaInfo>>({});
 
+// Format mpegts.js speed (KB/s float) — integer KB/s, auto MB/s past 1024.
+function fmtSpeed(kbps?: number): string {
+  if (kbps == null || kbps < 0 || Number.isNaN(kbps)) return '0 KB/s';
+  return kbps < 1024 ? `${Math.round(kbps)} KB/s` : `${(kbps / 1024).toFixed(1)} MB/s`;
+}
+
 const activePlayerStatus = computed<PlayerStatus>(() => {
   const statuses = Object.values(playerStatuses.value);
   if (statuses.length === 0) return 'nosignal';
@@ -214,7 +220,7 @@ const gridColsClass = computed(() => {
               v-if="playerStats[0]"
               class="pointer-events-none absolute bottom-1.5 left-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-mono text-gray-200"
             >
-              ↓ {{ playerStats[0].speed ?? 0 }} KB/s · {{ playerStats[0].decodedFrames ?? 0 }}f · drop {{ playerStats[0].droppedFrames ?? 0 }}
+              ↓ {{ fmtSpeed(playerStats[0].speed) }} · {{ playerStats[0].decodedFrames ?? 0 }}f · drop {{ playerStats[0].droppedFrames ?? 0 }}
             </div>
           </div>
 
@@ -243,7 +249,7 @@ const gridColsClass = computed(() => {
                 v-if="playerStats[slot.id]"
                 class="pointer-events-none absolute bottom-1.5 left-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-mono text-gray-200"
               >
-                ↓ {{ playerStats[slot.id].speed ?? 0 }} KB/s · {{ playerStats[slot.id].decodedFrames ?? 0 }}f · drop {{ playerStats[slot.id].droppedFrames ?? 0 }}
+                ↓ {{ fmtSpeed(playerStats[slot.id].speed) }} · {{ playerStats[slot.id].decodedFrames ?? 0 }}f · drop {{ playerStats[slot.id].droppedFrames ?? 0 }}
               </div>
             </div>
           </div>

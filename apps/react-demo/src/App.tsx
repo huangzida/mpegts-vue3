@@ -34,6 +34,12 @@ const STATUS_COLORS: Record<PlayerStatus, string> = {
 }
 
 // ponytail: lower = worse. Worst-of aggregate = lowest severity across tiles.
+// Format mpegts.js speed (KB/s float) — integer KB/s, auto MB/s past 1024.
+function fmtSpeed(kbps?: number): string {
+  if (kbps == null || kbps < 0 || Number.isNaN(kbps)) return '0 KB/s'
+  return kbps < 1024 ? `${Math.round(kbps)} KB/s` : `${(kbps / 1024).toFixed(1)} MB/s`
+}
+
 const SEVERITY: Record<PlayerStatus, number> = {
   error: 0,
   reconnecting: 1,
@@ -207,7 +213,7 @@ export default function App() {
                     )}
                     {st && (
                       <span className="absolute bottom-1.5 left-1.5 rounded bg-black/60 px-1.5 py-0.5 font-mono text-[10px] text-gray-200">
-                        {st.speed != null ? `↓ ${Math.round(st.speed)} KB/s · ` : ''}
+                        {st.speed != null ? `↓ ${fmtSpeed(st.speed)} · ` : ''}
                         {st.decodedFrames != null ? `${st.decodedFrames}f · ` : ''}
                         drop {st.droppedFrames ?? 0}
                       </span>
