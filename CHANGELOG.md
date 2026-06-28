@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1](https://github.com/huangzida/mpegts-vue3/compare/v0.4.0...v0.4.1) (2026-06-28)
+
+
+### Bug Fixes
+
+* **ci:** apps typecheck 解析 package 源码 (不依赖 dist) + 对齐 JSX 模式 ([3143e58](https://github.com/huangzida/mpegts-vue3/commit/3143e58c0cad913528f210a609e1717d9464a6d3))
+* **pkg:** 构建时把根 README 拷进包目录, npm publish 即含 readme ([feb4c27](https://github.com/huangzida/mpegts-vue3/commit/feb4c27f5c96b67a367018dbf68d7a8b3d650840))
+
 # [0.4.0](https://github.com/huangzida/mpegts-vue3/compare/v0.3.2...v0.4.0) (2026-06-28)
 
 
