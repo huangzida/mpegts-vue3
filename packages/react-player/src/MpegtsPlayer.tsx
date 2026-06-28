@@ -14,6 +14,7 @@ import type { MediaDataSource, MediaInfo, MpegtsConfig, PlayerStatus, ReconnectC
 
 const DEFAULT_CONFIG: MpegtsConfig = {
   enableWorker: true,
+  reuseRedirectedURL: true,
   enableStashBuffer: false,
   liveBufferLatencyChasing: true,
   liveBufferLatencyChasingOnPaused: true,
@@ -96,6 +97,7 @@ export interface MpegtsPlayerProps {
   onStatistics?: (info: StatisticsInfo) => void
   onMediaInfo?: (info: MediaInfo) => void
   onRecovered?: () => void
+  onEnded?: () => void
   autoReconnect?: boolean
   reconnect?: ReconnectConfig
 }
@@ -106,6 +108,12 @@ export interface MpegtsPlayerRef {
   reload: () => void
   setMuted: (muted: boolean) => void
   getPlayer: () => Mpegts.Player | null
+  getVolume: () => number
+  setVolume: (volume: number) => void
+  seek: (seconds: number) => void
+  getCurrentTime: () => number
+  getBufferedRanges: () => TimeRanges | null
+  getStatistics: () => StatisticsInfo | null
 }
 
 export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
@@ -130,6 +138,7 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       onStatistics,
       onMediaInfo,
       onRecovered,
+      onEnded,
       autoReconnect = true,
       reconnect,
     } = props
@@ -148,6 +157,8 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
     onMediaInfoRef.current = onMediaInfo
     const onRecoveredRef = useRef(onRecovered)
     onRecoveredRef.current = onRecovered
+    const onEndedRef = useRef(onEnded)
+    onEndedRef.current = onEnded
     const autoReconnectRef = useRef(autoReconnect)
     autoReconnectRef.current = autoReconnect
     const reconnectRef = useRef(reconnect)
@@ -230,11 +241,27 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       if (videoRef.current) videoRef.current.muted = m
     }, [])
     const getPlayer = useCallback((): Mpegts.Player | null => playerRef.current, [])
+    const getVolume = useCallback(() => videoRef.current?.volume ?? 0, [])
+    const setVolume = useCallback((v: number) => {
+      if (videoRef.current) videoRef.current.volume = v
+    }, [])
+    const seek = useCallback((seconds: number) => {
+      // player.currentTime routes through mpegts.js (range-load), not a bare
+      // <video> assign which would bypass segment loading for VOD.
+      if (playerRef.current) playerRef.current.currentTime = seconds
+    }, [])
+    const getCurrentTime = useCallback(() => videoRef.current?.currentTime ?? 0, [])
+    const getBufferedRanges = useCallback(() => videoRef.current?.buffered ?? null, [])
+    const getStatistics = useCallback((): StatisticsInfo | null =>
+      (playerRef.current?.statisticsInfo as StatisticsInfo | undefined) ?? null, [])
 
     useImperativeHandle(
       ref,
-      () => ({ play: doPlay, pause: doPause, reload, setMuted, getPlayer }),
-      [doPlay, doPause, reload, setMuted, getPlayer],
+      () => ({
+        play: doPlay, pause: doPause, reload, setMuted, getPlayer,
+        getVolume, setVolume, seek, getCurrentTime, getBufferedRanges, getStatistics,
+      }),
+      [doPlay, doPause, reload, setMuted, getPlayer, getVolume, setVolume, seek, getCurrentTime, getBufferedRanges, getStatistics],
     )
 
     useEffect(() => {
@@ -297,6 +324,10 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       player.on(Mpegts.Events.RECOVERED_EARLY_EOF, () => {
         if (myGen !== genRef.current) return
         onRecoveredRef.current?.()
+      })
+      player.on(Mpegts.Events.LOADING_COMPLETE, () => {
+        if (myGen !== genRef.current) return
+        onEndedRef.current?.()
       })
 
       player.load()

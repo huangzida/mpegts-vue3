@@ -29,6 +29,8 @@ const { recorder, MockPlayer } = vi.hoisted(() => {
     errorCb: ((t: string, d: string, i: unknown) => void) | null = null;
     handlers = new Map<string, (...args: any[]) => void>();
     playDeferred: Deferred | null = null;
+    currentTime = 0;
+    statisticsInfo: any = { speed: 0, decodedFrames: 0, droppedFrames: 0 };
     constructor(source: any, config: any) {
       this.source = source;
       this.config = config;
@@ -73,7 +75,7 @@ vi.mock('mpegts.js', () => ({
   default: {
     isSupported: () => recorder.isSupported,
     createPlayer: (source: any, config: any) => new MockPlayer(source, config),
-    Events: { ERROR: 'error', STATISTICS_INFO: 'statistics_info', MEDIA_INFO: 'media_info', RECOVERED_EARLY_EOF: 'recovered_early_eof' },
+    Events: { ERROR: 'error', STATISTICS_INFO: 'statistics_info', MEDIA_INFO: 'media_info', RECOVERED_EARLY_EOF: 'recovered_early_eof', LOADING_COMPLETE: 'loading_complete' },
   },
 }));
 
@@ -248,6 +250,27 @@ describe('MpegtsPlayer (Vue)', () => {
     expect(recorder.players).toHaveLength(3); // initial + 2 reconnects
     expect(statuses(w).at(-1)).toBe('error'); // 3rd error → exhausted → terminal
     vi.useRealTimers();
+    w.unmount();
+  });
+
+  it('control-bar ref methods: volume / seek / statistics', async () => {
+    const w = mountIt();
+    await nextTick();
+    const vm = w.vm as any;
+    vm.setVolume(0.5);
+    expect(vm.getVolume()).toBe(0.5);
+    vm.seek(42);
+    expect(recorder.players[0].currentTime).toBe(42);
+    expect(vm.getStatistics()).toBe(recorder.players[0].statisticsInfo);
+    w.unmount();
+  });
+
+  it('forwards LOADING_COMPLETE → ended event', async () => {
+    const w = mountIt();
+    await nextTick();
+    recorder.players[0].fire('loading_complete');
+    await nextTick();
+    expect(w.emitted('ended')).toBeTruthy();
     w.unmount();
   });
 });

@@ -26,6 +26,8 @@ const { recorder, MockPlayer } = vi.hoisted(() => {
     errorCb: ((t: string, d: string, i: unknown) => void) | null = null;
     handlers = new Map<string, (...args: any[]) => void>();
     playDeferred: Deferred | null = null;
+    currentTime = 0;
+    statisticsInfo: any = { speed: 0, decodedFrames: 0, droppedFrames: 0 };
     constructor(source: any, config: any) {
       this.source = source;
       this.config = config;
@@ -70,7 +72,7 @@ vi.mock('mpegts.js', () => ({
   default: {
     isSupported: () => recorder.isSupported,
     createPlayer: (source: any, config: any) => new MockPlayer(source, config),
-    Events: { ERROR: 'error', STATISTICS_INFO: 'statistics_info', MEDIA_INFO: 'media_info', RECOVERED_EARLY_EOF: 'recovered_early_eof' },
+    Events: { ERROR: 'error', STATISTICS_INFO: 'statistics_info', MEDIA_INFO: 'media_info', RECOVERED_EARLY_EOF: 'recovered_early_eof', LOADING_COMPLETE: 'loading_complete' },
   },
 }));
 
@@ -80,11 +82,13 @@ describe('MpegtsPlayer (React)', () => {
   const statistics: any[] = [];
   const mediaInfos: any[] = [];
   let recovered = 0;
+  let ended = 0;
   const onStatus = (s: string) => statuses.push(s);
   const onError = (t: string, d: string, i: unknown) => errors.push([t, d, i]);
   const onStatistics = (i: any) => statistics.push(i);
   const onMediaInfo = (i: any) => mediaInfos.push(i);
   const onRecovered = () => { recovered++ };
+  const onEnded = () => { ended++ };
 
   beforeEach(() => {
     recorder.players.length = 0;
@@ -94,6 +98,7 @@ describe('MpegtsPlayer (React)', () => {
     statistics.length = 0;
     mediaInfos.length = 0;
     recovered = 0;
+    ended = 0;
   });
   afterEach(() => cleanup());
 
@@ -108,6 +113,7 @@ describe('MpegtsPlayer (React)', () => {
         onStatistics={onStatistics}
         onMediaInfo={onMediaInfo}
         onRecovered={onRecovered}
+        onEnded={onEnded}
         {...props}
       />,
     );
@@ -240,5 +246,21 @@ describe('MpegtsPlayer (React)', () => {
     expect(recorder.players).toHaveLength(3);
     expect(statuses.at(-1)).toBe('error');
     vi.useRealTimers();
+  });
+
+  it('control-bar ref methods: volume / seek / statistics', () => {
+    const { ref } = renderIt();
+    const api = ref.current!;
+    act(() => { api.setVolume(0.5); });
+    expect(api.getVolume()).toBe(0.5);
+    act(() => { api.seek(42); });
+    expect(recorder.players[0].currentTime).toBe(42);
+    expect(api.getStatistics()).toBe(recorder.players[0].statisticsInfo);
+  });
+
+  it('forwards LOADING_COMPLETE → ended event', async () => {
+    renderIt();
+    await act(async () => { recorder.players[0].fire('loading_complete'); });
+    expect(ended).toBe(1);
   });
 });

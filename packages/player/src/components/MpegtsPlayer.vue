@@ -11,6 +11,7 @@ import Mpegts from 'mpegts.js';
 
 const DEFAULT_CONFIG: MpegtsConfig = {
   enableWorker: true,
+  reuseRedirectedURL: true,
   enableStashBuffer: false,
   liveBufferLatencyChasing: true,
   liveBufferLatencyChasingOnPaused: true,
@@ -69,6 +70,7 @@ const emit = defineEmits<{
   statistics: [info: StatisticsInfo];
   mediaInfo: [info: MediaInfo];
   recovered: [];
+  ended: [];
 }>();
 
 const videoRef = ref<HTMLVideoElement>() as Ref<HTMLVideoElement>;
@@ -233,7 +235,40 @@ function getPlayer(): Mpegts.Player | null {
   return player;
 }
 
-defineExpose({ play, pause, reload, setMuted, getPlayer });
+function getVolume(): number {
+  return videoRef.value?.volume ?? 0;
+}
+function setVolume(volume: number) {
+  if (videoRef.value) videoRef.value.volume = volume;
+}
+function seek(seconds: number) {
+  // player.currentTime setter routes through mpegts.js (triggers range-load),
+  // not a bare <video> assign which would bypass segment loading for VOD.
+  if (player) player.currentTime = seconds;
+}
+function getCurrentTime(): number {
+  return videoRef.value?.currentTime ?? 0;
+}
+function getBufferedRanges(): TimeRanges | null {
+  return videoRef.value?.buffered ?? null;
+}
+function getStatistics(): StatisticsInfo | null {
+  return (player?.statisticsInfo as StatisticsInfo | undefined) ?? null;
+}
+
+defineExpose({
+  play,
+  pause,
+  reload,
+  setMuted,
+  getPlayer,
+  getVolume,
+  setVolume,
+  seek,
+  getCurrentTime,
+  getBufferedRanges,
+  getStatistics,
+});
 
 function buildMediaDataSource(): MediaDataSource {
   const source: MediaDataSource = {
@@ -303,6 +338,10 @@ function createPlayer() {
   player.on(Mpegts.Events.RECOVERED_EARLY_EOF, () => {
     if (myGen !== gen) return;
     emit('recovered');
+  });
+  player.on(Mpegts.Events.LOADING_COMPLETE, () => {
+    if (myGen !== gen) return;
+    emit('ended');
   });
 
   player.load();

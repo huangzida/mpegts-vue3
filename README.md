@@ -131,12 +131,13 @@ Both Vue 3 and React components share the same props interface:
 
 ### Config merge
 
-`config` is shallow-merged with the package's low-latency live defaults: `{ ...DEFAULT_CONFIG, ...config }`. Your `config` overrides matching top-level keys; keys you don't set keep their defaults. There is no way to "unset" a default by passing `undefined` — omit the key to keep the default, or pass an explicit value to override. `config` is treated as create-time: changing it after mount debounces a player rebuild (~300 ms). Notable defaults: **`enableWorker: true`** (transmuxing off the main thread — the biggest perf lever for multi-view; pass `false` under CSP/no-Worker constraints), `enableStashBuffer: false`, `liveSyncTargetLatency: 0.5`.
+`config` is shallow-merged with the package's low-latency live defaults: `{ ...DEFAULT_CONFIG, ...config }`. Your `config` overrides matching top-level keys; keys you don't set keep their defaults. There is no way to "unset" a default by passing `undefined` — omit the key to keep the default, or pass an explicit value to override. `config` is treated as create-time: changing it after mount debounces a player rebuild (~300 ms). Notable defaults: **`enableWorker: true`** (transmuxing off the main thread — the biggest perf lever for multi-view; pass `false` under CSP/no-Worker constraints), `enableStashBuffer: false`, `liveSyncTargetLatency: 0.5`, **`reuseRedirectedURL: true`** (reuse CDN 301/302 redirects across seek/reconnect — pure upside for HTTP live-FLV).
 
 ### Notes
 
 - **Latency**: defaults (`enableStashBuffer: false`, `liveSyncTargetLatency: 0.5`, `liveBufferLatencyChasing: true`) target sub-second live latency. On lossy networks this can cause stalls — raise `liveSyncTargetLatency` / enable `enableStashBuffer` via `config` if you need stability over latency.
 - **Auto-reconnect**: on transient live network errors (`ConnectingTimeout`, `UnrecoverableEarlyEof`, `Exception`) the player retries with exponential backoff (default 5 tries, 1s→16s), emitting a `reconnecting` status. HTTP status errors (4xx/5xx) are **not** retried (permanent). Disable with `autoReconnect={false}`.
+- **Performance tuning**: `enableWorker: true` is on by default (transmuxing in a Web Worker). For maximum offloading on Chrome, set `config: { enableWorkerForMSE: true }` to move the entire MSE pipeline (incl. `MediaSource`/`SourceBuffer`) into a worker — capability is auto-detected and falls back gracefully on unsupported browsers. Statistics fire every `statisticsInfoReportInterval` (default 600 ms) — raise it under heavy multi-view to cut reactivity load, or use the `getStatistics()` ref method to pull on demand.
 - **`type` and MSE**: types `mse` / `mpegts` / `m2ts` / `flv` route through mpegts.js's MSE path and require `MediaSource Extensions`. Any other `type` (e.g. `mp4`) uses native `<video>` playback and works on browsers without MSE (e.g. iOS Safari). FLV **cannot** play on MSE-less browsers — there is no software-decode fallback.
 - **SSR / client-only**: the component imports `mpegts.js`, which touches `window` at module load, so it is **client-only**. In Nuxt wrap with `<ClientOnly>`; in Next.js use `next/dynamic(() => import(...), { ssr: false })`.
 
@@ -149,6 +150,7 @@ Both Vue 3 and React components share the same props interface:
 | `onStatistics` / `@statistics` | `(info: StatisticsInfo)` | mpegts.js telemetry (speed KB/s, decoded/dropped frames, segment counts) every ~600 ms |
 | `onMediaInfo` / `@mediaInfo` | `(info: MediaInfo)` | Resolved media info (resolution, fps, codecs, bitrate) — fires once when known |
 | `onRecovered` / `@recovered` | `()` | Stream self-healed after an early-EOF (mpegts.js internal VOD reconnect) |
+| `onEnded` / `@ended` | `()` | VOD playback reached end-of-stream (`LOADING_COMPLETE`) |
 
 ### Ref Methods
 
@@ -159,6 +161,11 @@ Both Vue 3 and React components share the same props interface:
 | `reload()` | Destroy and recreate the player — reconnects to the current `url`/`config`. Use to recover from stalls. |
 | `setMuted(muted: boolean)` | Imperatively mute/unmute the underlying `<video>` element without re-rendering. |
 | `getPlayer()` | Returns the underlying `mpegts.js` `Player` instance (or `null`) as an escape hatch for advanced APIs (statistics, buffered ranges, custom events). |
+| `getVolume()` / `setVolume(v)` | Get/set the underlying `<video>` volume (`0`–`1`) imperatively, without re-rendering. |
+| `seek(seconds)` | Seek — routes through mpegts.js so it range-loads the right segment (don't assign `<video>.currentTime` directly for VOD). |
+| `getCurrentTime()` | Current playback position in seconds. |
+| `getBufferedRanges()` | The `<video>` `TimeRanges` that have been downloaded/buffered. |
+| `getStatistics()` | Pull mpegts.js telemetry on demand (same shape as `onStatistics`) — for overlays that only show stats when visible. |
 
 ### PlayerStatus Type
 
