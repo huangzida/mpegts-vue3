@@ -449,9 +449,12 @@ onUnmounted(() => {
 
 <template>
   <div class="mpegts-player" :style="containerStyle">
+    <!-- ponytail: data-stream-url/type 无测试覆盖，删除绑定会静默回归 -->
     <video
       ref="videoRef"
       :style="videoStyle"
+      :data-stream-url="url"
+      :data-stream-type="type"
       @click.prevent
       @contextmenu.prevent
     ></video>
