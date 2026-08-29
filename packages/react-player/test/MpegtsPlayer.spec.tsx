@@ -150,12 +150,15 @@ describe('MpegtsPlayer (React)', () => {
   });
 
   it('gen guard: stale play promise after url change does not emit playing', async () => {
+    vi.useFakeTimers();
     const { rerender } = renderIt({ url: 'url1' });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     const p1 = recorder.players[0];
     expect(statuses.includes('playing')).toBe(false);
 
-    // change a create-affecting prop → effect cleanup (gen++) + recreate
+    // change a create-affecting prop → debounced recreate (300ms)
     rerender(<MpegtsPlayer url="url2" onStatus={onStatus} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
     const p2 = recorder.players[1];
 
     await act(async () => {
@@ -167,13 +170,23 @@ describe('MpegtsPlayer (React)', () => {
       p2.playDeferred!.resolve(); // current generation → emits playing
     });
     expect(statuses.filter((s) => s === 'playing')).toHaveLength(1);
+    vi.useRealTimers();
   });
 
-  it('sourceSignature: changing config recreates the player', () => {
+  it('debounce: 3 rapid config changes collapse to 1 recreate', async () => {
+    vi.useFakeTimers();
     const { rerender } = renderIt();
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(recorder.players).toHaveLength(1);
-    rerender(<MpegtsPlayer url="ws://x/live.flv" onStatus={onStatus} config={{ enableStashBuffer: true }} />);
-    expect(recorder.players).toHaveLength(2);
+
+    rerender(<MpegtsPlayer url="ws://x/live.flv" onStatus={onStatus} config={{ liveBufferLatencyMaxLatency: 2 }} />);
+    rerender(<MpegtsPlayer url="ws://x/live.flv" onStatus={onStatus} config={{ liveBufferLatencyMaxLatency: 2.2 }} />);
+    rerender(<MpegtsPlayer url="ws://x/live.flv" onStatus={onStatus} config={{ liveBufferLatencyMaxLatency: 2.5 }} />);
+    expect(recorder.players).toHaveLength(1); // debounced, not yet
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(recorder.players).toHaveLength(2); // single recreate
+    vi.useRealTimers();
   });
 
   it('ref methods: reload() recreates, getPlayer() returns instance', () => {

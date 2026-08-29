@@ -190,6 +190,8 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
 
     // Imperative reload: bumping this re-runs the create effect (reconnect).
     const [reloadNonce, setReloadNonce] = useState(0)
+    const isFirstRunRef = useRef(true)
+    const reloadNowRef = useRef(false)
 
     const updateStatus = useCallback((s: PlayerStatus) => {
       setStatus(s)
@@ -210,6 +212,7 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       updateStatus('reconnecting')
       reconnectTimerRef.current = setTimeout(() => {
         reconnectTimerRef.current = null
+        reloadNowRef.current = true
         setReloadNonce((n) => n + 1)
       }, delay)
       return true
@@ -237,7 +240,10 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       updateStatus('stopped')
     }, [updateStatus])
 
-    const reload = useCallback(() => setReloadNonce((n) => n + 1), [])
+    const reload = useCallback(() => {
+      reloadNowRef.current = true
+      setReloadNonce((n) => n + 1)
+    }, [])
     const setMuted = useCallback((m: boolean) => {
       if (videoRef.current) videoRef.current.muted = m
     }, [])
@@ -265,15 +271,41 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       [doPlay, doPause, reload, setMuted, getPlayer, getVolume, setVolume, seek, getCurrentTime, getBufferedRanges, getStatistics],
     )
 
-    useEffect(() => {
-      if (!url || !videoRef.current) return
+    // ponytail: 300ms debounce collapses rapid prop mutations into a single
+    // rebuild (aligns with the Vue sibling's scheduleRecreate). First mount,
+    // reload() and reconnect fire immediately; the live player is destroyed
+    // inside createPlayer(), never in the effect cleanup — bursts keep it
+    // playing until the single rebuild.
+    const createPlayer = () => {
+      const video = videoRef.current
+      // Vue createPlayer parity: destroy the previous generation first.
+      genRef.current++
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
+      }
+      const prev = playerRef.current
+      if (prev) {
+        try {
+          prev.pause()
+          prev.unload()
+          prev.detachMediaElement()
+          prev.destroy()
+        } catch {
+          // ignore
+        }
+        playerRef.current = null
+      }
+
+      if (!video) return
+
       if (MSE_REQUIRED_TYPES.includes(type) && !Mpegts.isSupported()) {
         updateStatus('error')
         onErrorRef.current?.('NotSupportedError', 'MediaSource Extensions (MSE) are not supported by this browser', { type })
         return
       }
 
-      const myGen = ++genRef.current
+      const myGen = genRef.current
 
       updateStatus('connecting')
 
@@ -295,7 +327,7 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       const player = Mpegts.createPlayer(source, mergedConfig)
       playerRef.current = player
 
-      player.attachMediaElement(videoRef.current)
+      player.attachMediaElement(video)
 
       player.on(
         Mpegts.Events.ERROR,
@@ -334,7 +366,7 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       player.load()
 
       if (autoplay) {
-        videoRef.current.muted = muted
+        video.muted = muted
         const result = player.play()
         if (result instanceof Promise) {
           result
@@ -343,8 +375,8 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
               // 浏览器自动播放策略拦截了带声音的播放，降级为静音重试
               // （与 video.js 的 manualAutoplay_("any") 行为保持一致）
               if (myGen !== genRef.current) return
-              if (!muted && videoRef.current && player) {
-                videoRef.current.muted = true
+              if (!muted && player) {
+                video.muted = true
                 const fallbackResult = player.play()
                 if (fallbackResult instanceof Promise) {
                   fallbackResult
@@ -362,26 +394,73 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
         }
       }
 
+    }
+
+    useEffect(() => {
+      if (!url) {
+        // Vue url-watcher parity: clearing the url tears down and reports
+        // nosignal — but only when a player actually existed.
+        genRef.current++
+        if (reconnectTimerRef.current) {
+          clearTimeout(reconnectTimerRef.current)
+          reconnectTimerRef.current = null
+        }
+        if (playerRef.current) {
+          try {
+            playerRef.current.pause()
+            playerRef.current.unload()
+            playerRef.current.detachMediaElement()
+            playerRef.current.destroy()
+          } catch {
+            // ignore
+          }
+          playerRef.current = null
+          updateStatus('nosignal')
+        }
+        return
+      }
+      if (!videoRef.current) return
+
+      if (isFirstRunRef.current || reloadNowRef.current) {
+        isFirstRunRef.current = false
+        reloadNowRef.current = false
+        createPlayer()
+      } else {
+        const timer = setTimeout(createPlayer, 300)
+        return () => {
+          // Superseded burst: cancel the pending rebuild. The live player is
+          // destroyed by the next createPlayer() or at unmount — never here.
+          clearTimeout(timer)
+        }
+      }
+      // Create-affecting props are captured by `sourceSignature`; `reloadNonce`
+      // forces a rebuild. autoplay/muted are read at create time only.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sourceSignature, reloadNonce])
+
+    // Real unmount teardown — the main effect's cleanup only cancels pending
+    // rebuilds so the old player survives debounce bursts.
+    useEffect(() => {
       return () => {
         genRef.current++
         if (reconnectTimerRef.current) {
           clearTimeout(reconnectTimerRef.current)
           reconnectTimerRef.current = null
         }
-        try {
-          player.pause()
-          player.unload()
-          player.detachMediaElement()
-          player.destroy()
-        } catch {
-          // ignore
+        const p = playerRef.current
+        if (p) {
+          try {
+            p.pause()
+            p.unload()
+            p.detachMediaElement()
+            p.destroy()
+          } catch {
+            // ignore
+          }
+          playerRef.current = null
         }
-        if (playerRef.current === player) playerRef.current = null
       }
-      // Create-affecting props are captured by `sourceSignature`; `reloadNonce`
-      // forces a rebuild. autoplay/muted are read at create time only.
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [sourceSignature, reloadNonce])
+    }, [])
 
     useEffect(() => {
       if (videoRef.current) {
