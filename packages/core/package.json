@@ -1,0 +1,25 @@
+{
+  "name": "mpegts-core",
+  "version": "0.4.1",
+  "private": true,
+  "type": "module",
+  "description": "Framework-agnostic mpegts.js player engine shared by mpegts-vue3 and mpegts-react. Bundled into each player's dist; never published.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "mpegts.js": "^1.8.0"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.9"
+  }
+}
