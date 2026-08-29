@@ -1,48 +1,18 @@
 // Client-only: mpegts.js touches `window` at module load. SSR consumers must
 // wrap this component (Nuxt <ClientOnly> / next/dynamic { ssr: false }).
-import Mpegts from 'mpegts.js'
-import {
-  forwardRef,
-  type CSSProperties,
-  useCallback,
-  useEffect,
-  useImperativeHandle,
-  useRef,
-  useState,
-} from 'react'
+import { forwardRef, type CSSProperties, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import type Mpegts from 'mpegts.js'
 
-import type { MediaDataSource, MediaInfo, MpegtsConfig, PlayerStatus, ReconnectConfig, StatisticsInfo } from './types'
+// PlayerEngine — the framework-agnostic module that owns the whole mpegts.js
+// lifecycle (config merge, MSE gate, gen guard, 重建 debounce, Live 重连,
+// event mapping, autoplay fallback, destroy sequence). This component is just
+// the React adapter: props → engine.update(), engine handlers → callbacks.
+import { createPlayerEngine, type PlayerEngine } from '../../core/src/index'
 
-const DEFAULT_CONFIG: MpegtsConfig = {
-  enableWorker: true,
-  reuseRedirectedURL: true,
-  enableStashBuffer: false,
-  liveBufferLatencyChasing: true,
-  liveBufferLatencyChasingOnPaused: true,
-  liveBufferLatencyMaxLatency: 1.5,
-  liveBufferLatencyMinRemain: 0.3,
-  liveSync: true,
-  liveSyncMaxLatency: 1.2,
-  liveSyncTargetLatency: 0.5,
-  autoCleanupSourceBuffer: true,
-  autoCleanupMaxBackwardDuration: 30,
-  autoCleanupMinBackwardDuration: 10,
-  fixAudioTimestampGap: true,
-}
-
-// mpegts.js createPlayer() routes these types to MSEPlayer (needs MediaSource);
-// any other type routes to NativePlayer (native <video>, no MSE). Only gate on
-// isSupported() for the MSE-required set.
-const MSE_REQUIRED_TYPES: string[] = ['mse', 'mpegts', 'm2ts', 'flv']
-
-// mpegts.js only auto-reconnects VOD; for live it throws to the upper layer.
-// These transient network error details are the ones worth retrying (not
-// HttpStatusCodeInvalid, which is a permanent 4xx/5xx).
-const RECONNECTABLE_ERRORS = new Set(['Exception', 'ConnectingTimeout', 'UnrecoverableEarlyEof'])
+import type { MediaInfo, MpegtsConfig, PlayerStatus, ReconnectConfig, StatisticsInfo } from './types'
 
 // ponytail: static styles hoisted to module scope (allocated once, not per
-// render) and the one keyframe injected once — mirrors the Vue sibling's
-// ensureKeyframe, instead of rendering a <style> per instance.
+// render) and the one keyframe injected once.
 const containerStyle: CSSProperties = {
   position: 'relative',
   width: '100%',
@@ -94,7 +64,7 @@ export interface MpegtsPlayerProps {
   showLoading?: boolean
   config?: Partial<MpegtsConfig>
   onStatus?: (status: PlayerStatus) => void
-  onError?: (errorType: string, errorDetail: string, errorInfo: any) => void
+  onError?: (errorType: string, errorDetail: string, errorInfo: unknown) => void
   onStatistics?: (info: StatisticsInfo) => void
   onMediaInfo?: (info: MediaInfo) => void
   onRecovered?: () => void
@@ -119,358 +89,73 @@ export interface MpegtsPlayerRef {
 
 export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
   function MpegtsPlayer(props, ref) {
-    const {
-      url,
-      autoplay = true,
-      isLive = true,
-      muted = true,
-      objectFit = 'fill',
-      type = 'mse',
-      cors,
-      withCredentials,
-      hasAudio = true,
-      hasVideo = true,
-      duration,
-      filesize,
-      showLoading = true,
-      config,
-      onStatus,
-      onError,
-      onStatistics,
-      onMediaInfo,
-      onRecovered,
-      onEnded,
-      autoReconnect = true,
-      reconnect,
-    } = props
+    const { url, type = 'mse', objectFit = 'fill', showLoading = true } = props
 
     const videoRef = useRef<HTMLVideoElement>(null)
-    const playerRef = useRef<Mpegts.Player | null>(null)
+    const engineRef = useRef<PlayerEngine | null>(null)
     const [status, setStatus] = useState<PlayerStatus>('nosignal')
 
-    const onStatusRef = useRef(onStatus)
-    onStatusRef.current = onStatus
-    const onErrorRef = useRef(onError)
-    onErrorRef.current = onError
-    const onStatisticsRef = useRef(onStatistics)
-    onStatisticsRef.current = onStatistics
-    const onMediaInfoRef = useRef(onMediaInfo)
-    onMediaInfoRef.current = onMediaInfo
-    const onRecoveredRef = useRef(onRecovered)
-    onRecoveredRef.current = onRecovered
-    const onEndedRef = useRef(onEnded)
-    onEndedRef.current = onEnded
-    const autoReconnectRef = useRef(autoReconnect)
-    autoReconnectRef.current = autoReconnect
-    const reconnectRef = useRef(reconnect)
-    reconnectRef.current = reconnect
-
-    // ponytail: generation guard — bump on every destroy/cleanup so in-flight
-    // autoplay promise callbacks bail instead of setState after unmount or
-    // writing status for a stale player (P0-3).
-    const genRef = useRef(0)
-    const reconnectAttemptsRef = useRef(0)
-    const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-    // ponytail: JSON signature collapses all create-affecting props into one
-    // effect dep, so config/source changes now recreate the player instead of
-    // being silently ignored (P0-2). String compare = value equality.
-    const sourceSignature = JSON.stringify({
-      url,
-      type,
-      isLive,
-      cors,
-      withCredentials,
-      hasAudio,
-      hasVideo,
-      duration,
-      filesize,
-      config,
-    })
-
-    // Imperative reload: bumping this re-runs the create effect (reconnect).
-    const [reloadNonce, setReloadNonce] = useState(0)
-    const isFirstRunRef = useRef(true)
-    const reloadNowRef = useRef(false)
-
-    const updateStatus = useCallback((s: PlayerStatus) => {
-      setStatus(s)
-      onStatusRef.current?.(s)
-    }, [])
-
-    const markPlaying = useCallback(() => {
-      reconnectAttemptsRef.current = 0
-      updateStatus('playing')
-    }, [updateStatus])
-
-    // mpegts.js throws live early-eof to the upper layer; we own reconnect.
-    const scheduleReconnect = useCallback((): boolean => {
-      const { retries = 5, minDelay = 1000, maxDelay = 16000 } = reconnectRef.current ?? {}
-      if (reconnectAttemptsRef.current >= retries) return false
-      const delay = Math.min(maxDelay, minDelay * 2 ** reconnectAttemptsRef.current)
-      reconnectAttemptsRef.current++
-      updateStatus('reconnecting')
-      reconnectTimerRef.current = setTimeout(() => {
-        reconnectTimerRef.current = null
-        reloadNowRef.current = true
-        setReloadNonce((n) => n + 1)
-      }, delay)
-      return true
-    }, [updateStatus])
-
-    const doPlay = useCallback(() => {
-      const player = playerRef.current
-      if (!player || !videoRef.current) return
-      const myGen = genRef.current
-      videoRef.current.muted = muted
-      const result = player.play()
-      if (result instanceof Promise) {
-        result
-          .then(() => { if (myGen === genRef.current) markPlaying() })
-          .catch(() => { if (myGen === genRef.current) updateStatus('stopped') })
-      } else {
-        markPlaying()
+    // Full snapshot on every call — the engine diffs create-affecting keys
+    // itself. Handlers are rebuilt each render and re-read at dispatch, so
+    // callbacks are always fresh without ref juggling.
+    function collect() {
+      const {
+        url, autoplay = true, isLive = true, muted = true, type = 'mse',
+        cors, withCredentials, hasAudio = true, hasVideo = true,
+        duration, filesize, config, autoReconnect = true, reconnect,
+        onStatus, onError, onStatistics, onMediaInfo, onRecovered, onEnded,
+      } = props
+      return {
+        video: videoRef.current as HTMLVideoElement,
+        url, autoplay, isLive, muted, type, cors, withCredentials,
+        hasAudio, hasVideo, duration, filesize, config, autoReconnect, reconnect,
+        handlers: {
+          onStatus: (s: PlayerStatus) => {
+            setStatus(s)
+            onStatus?.(s)
+          },
+          onError: (errorType: string, errorDetail: string, errorInfo: unknown) => onError?.(errorType, errorDetail, errorInfo),
+          onStatistics: (info: StatisticsInfo) => onStatistics?.(info),
+          onMediaInfo: (info: MediaInfo) => onMediaInfo?.(info),
+          onRecovered: () => onRecovered?.(),
+          onEnded: () => onEnded?.(),
+        },
       }
-    }, [updateStatus, markPlaying, muted])
+    }
 
-    const doPause = useCallback(() => {
-      const player = playerRef.current
-      if (!player) return
-      player.pause()
-      updateStatus('stopped')
-    }, [updateStatus])
+    useEffect(() => {
+      ensureKeyframe()
+      // Constructing with a url creates immediately (mount parity).
+      engineRef.current = createPlayerEngine(collect())
+      return () => {
+        engineRef.current?.destroy()
+        engineRef.current = null
+      }
+      // Mount/unmount only: every render below flows through engine.update().
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
 
-    const reload = useCallback(() => {
-      reloadNowRef.current = true
-      setReloadNonce((n) => n + 1)
-    }, [])
-    const setMuted = useCallback((m: boolean) => {
-      if (videoRef.current) videoRef.current.muted = m
-    }, [])
-    const getPlayer = useCallback((): Mpegts.Player | null => playerRef.current, [])
-    const getVolume = useCallback(() => videoRef.current?.volume ?? 0, [])
-    const setVolume = useCallback((v: number) => {
-      if (videoRef.current) videoRef.current.volume = v
-    }, [])
-    const seek = useCallback((seconds: number) => {
-      // player.currentTime routes through mpegts.js (range-load), not a bare
-      // <video> assign which would bypass segment loading for VOD.
-      if (playerRef.current) playerRef.current.currentTime = seconds
-    }, [])
-    const getCurrentTime = useCallback(() => videoRef.current?.currentTime ?? 0, [])
-    const getBufferedRanges = useCallback(() => videoRef.current?.buffered ?? null, [])
-    const getStatistics = useCallback((): StatisticsInfo | null =>
-      (playerRef.current?.statisticsInfo as StatisticsInfo | undefined) ?? null, [])
+    useEffect(() => {
+      engineRef.current?.update(collect())
+    })
 
     useImperativeHandle(
       ref,
       () => ({
-        play: doPlay, pause: doPause, reload, setMuted, getPlayer,
-        getVolume, setVolume, seek, getCurrentTime, getBufferedRanges, getStatistics,
+        play: () => engineRef.current?.play(),
+        pause: () => engineRef.current?.pause(),
+        reload: () => engineRef.current?.reload(),
+        setMuted: (muted: boolean) => engineRef.current?.setMuted(muted),
+        getPlayer: () => (engineRef.current?.getPlayer() as Mpegts.Player | null) ?? null,
+        getVolume: () => engineRef.current?.getVolume() ?? 0,
+        setVolume: (volume: number) => engineRef.current?.setVolume(volume),
+        seek: (seconds: number) => engineRef.current?.seek(seconds),
+        getCurrentTime: () => engineRef.current?.getCurrentTime() ?? 0,
+        getBufferedRanges: () => engineRef.current?.getBufferedRanges() ?? null,
+        getStatistics: () => engineRef.current?.getStatistics() ?? null,
       }),
-      [doPlay, doPause, reload, setMuted, getPlayer, getVolume, setVolume, seek, getCurrentTime, getBufferedRanges, getStatistics],
+      [],
     )
-
-    // ponytail: 300ms debounce collapses rapid prop mutations into a single
-    // rebuild (aligns with the Vue sibling's scheduleRecreate). First mount,
-    // reload() and reconnect fire immediately; the live player is destroyed
-    // inside createPlayer(), never in the effect cleanup — bursts keep it
-    // playing until the single rebuild.
-    const createPlayer = () => {
-      const video = videoRef.current
-      // Vue createPlayer parity: destroy the previous generation first.
-      genRef.current++
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current)
-        reconnectTimerRef.current = null
-      }
-      const prev = playerRef.current
-      if (prev) {
-        try {
-          prev.pause()
-          prev.unload()
-          prev.detachMediaElement()
-          prev.destroy()
-        } catch {
-          // ignore
-        }
-        playerRef.current = null
-      }
-
-      if (!video) return
-
-      if (MSE_REQUIRED_TYPES.includes(type) && !Mpegts.isSupported()) {
-        updateStatus('error')
-        onErrorRef.current?.('NotSupportedError', 'MediaSource Extensions (MSE) are not supported by this browser', { type })
-        return
-      }
-
-      const myGen = genRef.current
-
-      updateStatus('connecting')
-
-      const mergedConfig: MpegtsConfig = { ...DEFAULT_CONFIG, ...config }
-      const source: MediaDataSource = {
-        type,
-        isLive,
-        url,
-      }
-      if (cors !== undefined) source.cors = cors
-      if (withCredentials !== undefined) source.withCredentials = withCredentials
-      // 默认 hasAudio/hasVideo: true，避免某些 FLV 流（如 ZLMediaKit）
-      // 的 header flag 未标记音/视频导致对应包被丢弃（表现为黑屏/无声）
-      source.hasAudio = hasAudio
-      source.hasVideo = hasVideo
-      if (duration !== undefined) source.duration = duration
-      if (filesize !== undefined) source.filesize = filesize
-
-      const player = Mpegts.createPlayer(source, mergedConfig)
-      playerRef.current = player
-
-      player.attachMediaElement(video)
-
-      player.on(
-        Mpegts.Events.ERROR,
-        (errorType: string, errorDetail: string, errorInfo: any) => {
-          if (myGen !== genRef.current) return
-          onErrorRef.current?.(errorType, errorDetail, errorInfo)
-          if (
-            autoReconnectRef.current &&
-            errorType === 'NetworkError' &&
-            RECONNECTABLE_ERRORS.has(errorDetail) &&
-            scheduleReconnect()
-          ) {
-            return // reconnect scheduled — not a terminal error
-          }
-          updateStatus('error')
-        },
-      )
-
-      player.on(Mpegts.Events.STATISTICS_INFO, (info: StatisticsInfo) => {
-        if (myGen !== genRef.current) return
-        onStatisticsRef.current?.(info)
-      })
-      player.on(Mpegts.Events.MEDIA_INFO, (info: MediaInfo) => {
-        if (myGen !== genRef.current) return
-        onMediaInfoRef.current?.(info)
-      })
-      player.on(Mpegts.Events.RECOVERED_EARLY_EOF, () => {
-        if (myGen !== genRef.current) return
-        onRecoveredRef.current?.()
-      })
-      player.on(Mpegts.Events.LOADING_COMPLETE, () => {
-        if (myGen !== genRef.current) return
-        onEndedRef.current?.()
-      })
-
-      player.load()
-
-      if (autoplay) {
-        video.muted = muted
-        const result = player.play()
-        if (result instanceof Promise) {
-          result
-            .then(() => { if (myGen === genRef.current) markPlaying() })
-            .catch(() => {
-              // 浏览器自动播放策略拦截了带声音的播放，降级为静音重试
-              // （与 video.js 的 manualAutoplay_("any") 行为保持一致）
-              if (myGen !== genRef.current) return
-              if (!muted && player) {
-                video.muted = true
-                const fallbackResult = player.play()
-                if (fallbackResult instanceof Promise) {
-                  fallbackResult
-                    .then(() => { if (myGen === genRef.current) markPlaying() })
-                    .catch(() => { if (myGen === genRef.current) updateStatus('stopped') })
-                } else {
-                  markPlaying()
-                }
-              } else {
-                updateStatus('stopped')
-              }
-            })
-        } else {
-          markPlaying()
-        }
-      }
-
-    }
-
-    useEffect(() => {
-      if (!url) {
-        // Vue url-watcher parity: clearing the url tears down and reports
-        // nosignal — but only when a player actually existed.
-        genRef.current++
-        if (reconnectTimerRef.current) {
-          clearTimeout(reconnectTimerRef.current)
-          reconnectTimerRef.current = null
-        }
-        if (playerRef.current) {
-          try {
-            playerRef.current.pause()
-            playerRef.current.unload()
-            playerRef.current.detachMediaElement()
-            playerRef.current.destroy()
-          } catch {
-            // ignore
-          }
-          playerRef.current = null
-          updateStatus('nosignal')
-        }
-        return
-      }
-      if (!videoRef.current) return
-
-      if (isFirstRunRef.current || reloadNowRef.current) {
-        isFirstRunRef.current = false
-        reloadNowRef.current = false
-        createPlayer()
-      } else {
-        const timer = setTimeout(createPlayer, 300)
-        return () => {
-          // Superseded burst: cancel the pending rebuild. The live player is
-          // destroyed by the next createPlayer() or at unmount — never here.
-          clearTimeout(timer)
-        }
-      }
-      // Create-affecting props are captured by `sourceSignature`; `reloadNonce`
-      // forces a rebuild. autoplay/muted are read at create time only.
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [sourceSignature, reloadNonce])
-
-    // Real unmount teardown — the main effect's cleanup only cancels pending
-    // rebuilds so the old player survives debounce bursts.
-    useEffect(() => {
-      return () => {
-        genRef.current++
-        if (reconnectTimerRef.current) {
-          clearTimeout(reconnectTimerRef.current)
-          reconnectTimerRef.current = null
-        }
-        const p = playerRef.current
-        if (p) {
-          try {
-            p.pause()
-            p.unload()
-            p.detachMediaElement()
-            p.destroy()
-          } catch {
-            // ignore
-          }
-          playerRef.current = null
-        }
-      }
-    }, [])
-
-    useEffect(() => {
-      if (videoRef.current) {
-        videoRef.current.muted = muted
-      }
-    }, [muted])
-
-    useEffect(() => {
-      ensureKeyframe()
-    }, [])
 
     const videoStyle: CSSProperties = {
       position: 'absolute',

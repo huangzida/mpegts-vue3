@@ -1,21 +1,11 @@
-import type Mpegts from 'mpegts.js'
-
-export type MediaDataSource = Mpegts.MediaDataSource
-export type MediaSegment = Mpegts.MediaSegment
-export type MpegtsConfig = Mpegts.Config
-export type StatisticsInfo = Mpegts.MSEPlayerStatisticsInfo
-export type MediaInfo = Mpegts.MSEPlayerMediaInfo
-
-export interface ReconnectConfig {
-  retries?: number
-  minDelay?: number
-  maxDelay?: number
-}
-
-export type PlayerStatus =
-  | 'connecting'
-  | 'reconnecting'
-  | 'error'
-  | 'nosignal'
-  | 'playing'
-  | 'stopped'
+// Public contract types now live with the PlayerEngine; the names and shapes
+// exported here are unchanged from when they were defined inline.
+export type {
+  MediaDataSource,
+  MediaInfo,
+  MediaSegment,
+  MpegtsConfig,
+  PlayerStatus,
+  ReconnectConfig,
+  StatisticsInfo,
+} from '../../core/src/index'

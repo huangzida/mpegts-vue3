@@ -25,9 +25,9 @@ Requires **Node >=18** and **pnpm@9.15.4** (`packageManager` is pinned).
 
 ## Architecture
 
-- **No shared source between the two packages.** `packages/player/src/` (Vue SFC) and `packages/react-player/src/` implement the same component independently. `types.ts` is duplicated verbatim in both. A change to shared props/types/behavior must be applied to **both** packages — and both test files (`test/MpegtsPlayer.spec.{ts,tsx}`), which are also mirrored.
+- **One engine, two thin adapters** (ADR-0001, supersedes the old "no shared source" rule). `packages/core` (private, never published) owns `createPlayerEngine()`: the entire framework-agnostic lifecycle — config merge, MSE gate, generation guard, 重建 debounce (`rebuild` option, default 300 ms), Live 重连, event mapping, autoplay fallback, destroy sequence. `packages/player/src/` (Vue SFC) and `packages/react-player/src/` are adapters: props → `engine.update()`, engine handlers → emits/callbacks, ref → engine delegation. Their public contracts (props, emits/callbacks, ref methods, exported type names — `types.ts` re-exports them from core) are **frozen**; behavioural changes go in `packages/core`, never duplicated per adapter. See `CONTEXT.md` for domain vocabulary.
 - Versions are **lockstep**: root + both packages share one version. `release-it` bumps root, then `after:bump` sets the version in every `packages/*`.
-- Peer deps (`vue`, `react`, `react-dom`, `mpegts.js`) are kept external via tsdown `neverBundle` — never bundle them into `dist`.
+- Peer deps (`vue`, `react`, `react-dom`, `mpegts.js`) are kept external via tsdown `neverBundle` — never bundle them into `dist`. `packages/core` is the opposite: it is **bundled into each player's `dist`** via relative source imports (deliberately not in `neverBundle`, deliberately not a workspace dependency, so no `mpegts-core` entry appears in the published manifests).
 - Each package has an `@/*` → `./src/*` path alias (per-package `tsconfig.json`).
 - `mpegts.js` touches `window` at import, so the components are **client-only**. In SSR frameworks wrap with `<ClientOnly>` (Nuxt) or `next/dynamic(..., { ssr: false })`.
 
@@ -39,9 +39,9 @@ Requires **Node >=18** and **pnpm@9.15.4** (`packageManager` is pinned).
 
 ## Testing conventions
 
-- vitest + jsdom. Specs live in each package's `test/` dir (`test/**/*.spec.ts` for Vue, `test/**/*.spec.{ts,tsx}` for React).
-- **Always mock `mpegts.js`** with `vi.mock('mpegts.js', ...)`. Because it touches `window` and `vi.mock` is hoisted above imports, the mock factory + the `MockPlayer` recorder must be created inside `vi.hoisted(() => { ... })`. The recorder is the single source of truth assertions read against. Follow the existing `test/MpegtsPlayer.spec.ts` pattern exactly when adding tests.
-- Several tests rely on `vi.useFakeTimers()` for the ~300 ms debounced player rebuild and reconnect backoff — advance timers explicitly.
+- vitest + jsdom. Behavioural coverage lives **once** in `packages/core/test/engine.spec.ts` (pure DI — pass `createMockFactory()` from `src/testing.ts`, no module mocking). Adapter specs in each package's `test/` dir only pin the wiring (props in, emits/callbacks/ref out).
+- Adapter specs mock `mpegts.js` with the **shared harness**: `vi.mock('mpegts.js', async () => (await import('../../core/src/testing')).mockMpegtsModule())`. The `MockPlayer` + `recorder` live in `packages/core/src/testing.ts` (the recorder is the single source of truth assertions read against). The dynamic import inside the factory is required — `vi.mock` factories are hoisted above static imports. No `vi.hoisted` anywhere anymore.
+- Engine tests rely on `vi.useFakeTimers()` for the 重建 debounce and reconnect backoff — advance timers explicitly (`await vi.advanceTimersByTimeAsync(300)`).
 
 ## Release
 

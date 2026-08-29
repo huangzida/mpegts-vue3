@@ -2,97 +2,27 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { nextTick } from 'vue';
 import MpegtsPlayer from '../src/components/MpegtsPlayer.vue';
+import { recorder, resetRecorder } from '../../core/src/testing';
 
-// vi.mock is hoisted above imports, so the recorder + MockPlayer must be created
-// inside vi.hoisted() to be visible to the factory. The recorder is the single
-// source of truth the tests assert against.
-const { recorder, MockPlayer } = vi.hoisted(() => {
-  type Deferred = {
-    promise: Promise<unknown>;
-    resolve: (v?: unknown) => void;
-    reject: (e?: unknown) => void;
-  };
-  function createDeferred(): Deferred {
-    let resolve!: (v?: unknown) => void;
-    let reject!: (e?: unknown) => void;
-    const promise = new Promise<unknown>((res, rej) => {
-      resolve = res;
-      reject = rej;
-    });
-    return { promise, resolve, reject };
-  }
-
-  class MockPlayer {
-    calls: string[] = [];
-    source: any;
-    config: any;
-    errorCb: ((t: string, d: string, i: unknown) => void) | null = null;
-    handlers = new Map<string, (...args: any[]) => void>();
-    playDeferred: Deferred | null = null;
-    currentTime = 0;
-    statisticsInfo: any = { speed: 0, decodedFrames: 0, droppedFrames: 0 };
-    constructor(source: any, config: any) {
-      this.source = source;
-      this.config = config;
-      recorder.players.push(this);
-    }
-    attachMediaElement() {
-      this.calls.push('attachMediaElement');
-    }
-    on(event: string, cb: any) {
-      this.handlers.set(event, cb);
-    }
-    fire(event: string, ...args: any[]) {
-      this.handlers.get(event)?.(...args);
-    }
-    load() {
-      this.calls.push('load');
-    }
-    play() {
-      this.calls.push('play');
-      this.playDeferred = createDeferred();
-      return this.playDeferred.promise;
-    }
-    pause() {
-      this.calls.push('pause');
-    }
-    unload() {
-      this.calls.push('unload');
-    }
-    detachMediaElement() {
-      this.calls.push('detachMediaElement');
-    }
-    destroy() {
-      this.calls.push('destroy');
-    }
-  }
-
-  const recorder = { players: [] as MockPlayer[], isSupported: true };
-  return { recorder, MockPlayer };
-});
-
-vi.mock('mpegts.js', () => ({
-  default: {
-    isSupported: () => recorder.isSupported,
-    createPlayer: (source: any, config: any) => new MockPlayer(source, config),
-    Events: { ERROR: 'error', STATISTICS_INFO: 'statistics_info', MEDIA_INFO: 'media_info', RECOVERED_EARLY_EOF: 'recovered_early_eof', LOADING_COMPLETE: 'loading_complete' },
-  },
-}));
+// The engine's default factory imports mpegts.js — swap it for the shared
+// MockPlayer harness that lives in mpegts-core (src/testing.ts). The dynamic
+// import is required: vi.mock factories are hoisted above static imports, so
+// the module can only be loaded inside the factory.
+vi.mock('mpegts.js', async () => (await import('../../core/src/testing')).mockMpegtsModule());
 
 function statuses(wrapper: ReturnType<typeof mount>): string[] {
   return (wrapper.emitted('status') ?? []).map((args) => args[0] as string);
 }
 
-describe('MpegtsPlayer (Vue)', () => {
-  beforeEach(() => {
-    recorder.players.length = 0;
-    recorder.isSupported = true;
-  });
+// Adapter smoke tests: full behavioural coverage lives in mpegts-core's
+// engine suite; these pin the Vue wiring (props in, emits/ref out).
+describe('MpegtsPlayer (Vue adapter)', () => {
+  beforeEach(() => resetRecorder());
 
   const mountIt = (props: Record<string, unknown> = {}) =>
     mount(MpegtsPlayer, { props: { url: 'ws://x/live.flv', ...props } });
 
-  it('mount: lifecycle order + load-bearing source fields (hasVideo guard)', async () => {
+  it('mount: creates the player through the engine with load-bearing source fields', async () => {
     const w = mountIt();
     await nextTick();
     expect(recorder.players).toHaveLength(1);
@@ -108,6 +38,34 @@ describe('MpegtsPlayer (Vue)', () => {
     w.unmount();
   });
 
+  it('engine status flows to the status emit', async () => {
+    const w = mountIt();
+    await nextTick();
+    expect(statuses(w)).toEqual(['connecting']);
+
+    recorder.players[0].playDeferred!.resolve();
+    await nextTick();
+    expect(statuses(w).at(-1)).toBe('playing');
+    w.unmount();
+  });
+
+  it('ref methods delegate: reload() recreates, getPlayer() returns the instance', async () => {
+    const w = mountIt();
+    await nextTick();
+    // @vue/test-utils does not reflect defineExpose shapes onto vm's type —
+    // cast once to the exposed surface instead of inline member casts.
+    const exposed = w.vm as unknown as {
+      getPlayer: () => unknown
+      reload: () => void
+    };
+    expect(recorder.players).toHaveLength(1);
+    expect(exposed.getPlayer()).toBe(recorder.players[0]);
+    exposed.reload();
+    await nextTick();
+    expect(recorder.players).toHaveLength(2);
+    w.unmount();
+  });
+
   it('unmount: cleanup order pause→unload→detach→destroy', async () => {
     const w = mountIt();
     await nextTick();
@@ -118,68 +76,7 @@ describe('MpegtsPlayer (Vue)', () => {
     expect(p.calls).toEqual(['pause', 'unload', 'detachMediaElement', 'destroy']);
   });
 
-  it('config merge: user key wins, default key present', async () => {
-    const w = mountIt({ config: { enableStashBuffer: true } });
-    await nextTick();
-    const cfg = recorder.players[0].config;
-    expect(cfg.enableStashBuffer).toBe(true); // user override
-    expect(cfg.liveSync).toBe(true); // default still present
-    w.unmount();
-  });
-
-  it('gen guard: stale play promise after url change does not emit playing', async () => {
-    vi.useFakeTimers();
-    const w = mountIt({ url: 'url1' });
-    await vi.advanceTimersByTimeAsync(0);
-    const p1 = recorder.players[0];
-    expect(statuses(w).includes('playing')).toBe(false);
-
-    await w.setProps({ url: 'url2' });
-    await vi.advanceTimersByTimeAsync(300); // debounce recreate
-    const p2 = recorder.players[1];
-
-    p1.playDeferred!.resolve(); // stale generation → must bail
-    await vi.advanceTimersByTimeAsync(0);
-    expect(statuses(w).filter((s) => s === 'playing')).toHaveLength(0);
-
-    p2.playDeferred!.resolve(); // current generation → emits playing
-    await vi.advanceTimersByTimeAsync(0);
-    expect(statuses(w).filter((s) => s === 'playing')).toHaveLength(1);
-
-    vi.useRealTimers();
-    w.unmount();
-  });
-
-  it('debounce: 3 rapid config changes collapse to 1 recreate', async () => {
-    vi.useFakeTimers();
-    const w = mountIt();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(recorder.players).toHaveLength(1);
-
-    await w.setProps({ config: { liveBufferLatencyMaxLatency: 2 } });
-    await w.setProps({ config: { liveBufferLatencyMaxLatency: 2.2 } });
-    await w.setProps({ config: { liveBufferLatencyMaxLatency: 2.5 } });
-    expect(recorder.players).toHaveLength(1); // debounced, not yet
-
-    await vi.advanceTimersByTimeAsync(300);
-    expect(recorder.players).toHaveLength(2); // single recreate
-
-    vi.useRealTimers();
-    w.unmount();
-  });
-
-  it('ref methods: reload() recreates, getPlayer() returns instance', async () => {
-    const w = mountIt();
-    await nextTick();
-    expect(recorder.players).toHaveLength(1);
-    expect((w.vm as any).getPlayer()).toBe(recorder.players[0]);
-    (w.vm as any).reload();
-    await nextTick();
-    expect(recorder.players).toHaveLength(2);
-    w.unmount();
-  });
-
-  it('isSupported() false (MSE type) → error status + NotSupportedError, no player', async () => {
+  it('MSE gate failure surfaces as NotSupportedError + error status', async () => {
     recorder.isSupported = false;
     const w = mountIt();
     await nextTick();
@@ -191,85 +88,16 @@ describe('MpegtsPlayer (Vue)', () => {
     w.unmount();
   });
 
-  it('non-MSE type bypasses the MSE gate (NativePlayer path)', async () => {
-    recorder.isSupported = false; // would block mse/flv, but not mp4
-    const w = mountIt({ type: 'mp4' });
-    await nextTick();
-    expect(recorder.players).toHaveLength(1); // created via NativePlayer, gate skipped
-    w.unmount();
-  });
-
-  it('forwards STATISTICS_INFO and MEDIA_INFO events', async () => {
+  it('forwards statistics / mediaInfo / ended events', async () => {
     const w = mountIt();
     await nextTick();
     const p = recorder.players[0];
     p.fire('statistics_info', { speed: 100, decodedFrames: 10 });
     p.fire('media_info', { width: 1920, height: 1080 });
+    p.fire('loading_complete');
     await nextTick();
     expect(w.emitted('statistics')?.[0]?.[0]).toMatchObject({ speed: 100 });
     expect(w.emitted('mediaInfo')?.[0]?.[0]).toMatchObject({ width: 1920 });
-    w.unmount();
-  });
-
-  it('autoReconnect=false → transient network error is terminal', async () => {
-    const w = mountIt({ autoReconnect: false });
-    await nextTick();
-    recorder.players[0].fire('error', 'NetworkError', 'UnrecoverableEarlyEof', {});
-    await nextTick();
-    expect(statuses(w).at(-1)).toBe('error');
-    expect(statuses(w).includes('reconnecting')).toBe(false);
-    w.unmount();
-  });
-
-  it('auto-reconnects on transient network error, resets on success', async () => {
-    vi.useFakeTimers();
-    const w = mountIt({ reconnect: { retries: 3, minDelay: 1000, maxDelay: 8000 } });
-    await vi.advanceTimersByTimeAsync(0);
-    recorder.players[0].fire('error', 'NetworkError', 'UnrecoverableEarlyEof', {});
-    await vi.advanceTimersByTimeAsync(0);
-    expect(statuses(w).includes('reconnecting')).toBe(true);
-    await vi.advanceTimersByTimeAsync(1000); // backoff fires → recreate
-    expect(recorder.players).toHaveLength(2);
-    recorder.players[1].playDeferred!.resolve(); // reconnect succeeds
-    await vi.advanceTimersByTimeAsync(0);
-    expect(statuses(w).filter((s) => s === 'playing')).toHaveLength(1);
-    vi.useRealTimers();
-    w.unmount();
-  });
-
-  it('gives up after retries exhausted → terminal error', async () => {
-    vi.useFakeTimers();
-    const w = mountIt({ reconnect: { retries: 2, minDelay: 500, maxDelay: 500 } });
-    await vi.advanceTimersByTimeAsync(0);
-    recorder.players[0].fire('error', 'NetworkError', 'UnrecoverableEarlyEof', {});
-    await vi.advanceTimersByTimeAsync(500);
-    recorder.players[1].fire('error', 'NetworkError', 'UnrecoverableEarlyEof', {});
-    await vi.advanceTimersByTimeAsync(500);
-    recorder.players[2].fire('error', 'NetworkError', 'UnrecoverableEarlyEof', {});
-    await vi.advanceTimersByTimeAsync(0);
-    expect(recorder.players).toHaveLength(3); // initial + 2 reconnects
-    expect(statuses(w).at(-1)).toBe('error'); // 3rd error → exhausted → terminal
-    vi.useRealTimers();
-    w.unmount();
-  });
-
-  it('control-bar ref methods: volume / seek / statistics', async () => {
-    const w = mountIt();
-    await nextTick();
-    const vm = w.vm as any;
-    vm.setVolume(0.5);
-    expect(vm.getVolume()).toBe(0.5);
-    vm.seek(42);
-    expect(recorder.players[0].currentTime).toBe(42);
-    expect(vm.getStatistics()).toBe(recorder.players[0].statisticsInfo);
-    w.unmount();
-  });
-
-  it('forwards LOADING_COMPLETE → ended event', async () => {
-    const w = mountIt();
-    await nextTick();
-    recorder.players[0].fire('loading_complete');
-    await nextTick();
     expect(w.emitted('ended')).toBeTruthy();
     w.unmount();
   });

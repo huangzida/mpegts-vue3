@@ -3,34 +3,18 @@ import type { CSSProperties, Ref } from 'vue';
 
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 
+import type Mpegts from 'mpegts.js';
+
 import type { MediaDataSource, MediaInfo, MpegtsConfig, PlayerStatus, ReconnectConfig, StatisticsInfo } from '../types';
 
 // Client-only: mpegts.js touches `window` at module load. SSR consumers must
 // wrap this component (Nuxt <ClientOnly> / next/dynamic { ssr: false }).
-import Mpegts from 'mpegts.js';
 
-const DEFAULT_CONFIG: MpegtsConfig = {
-  enableWorker: true,
-  reuseRedirectedURL: true,
-  enableStashBuffer: false,
-  liveBufferLatencyChasing: true,
-  liveBufferLatencyChasingOnPaused: true,
-  liveBufferLatencyMaxLatency: 1.5,
-  liveBufferLatencyMinRemain: 0.3,
-  liveSync: true,
-  liveSyncMaxLatency: 1.2,
-  liveSyncTargetLatency: 0.5,
-  autoCleanupSourceBuffer: true,
-  autoCleanupMaxBackwardDuration: 30,
-  autoCleanupMinBackwardDuration: 10,
-  fixAudioTimestampGap: true,
-};
-
-// mpegts.js createPlayer() routes these types to MSEPlayer (needs MediaSource);
-// any other type (e.g. 'mp4') routes to NativePlayer (native <video>, no MSE).
-// Only gate on isSupported() for the MSE-required set — otherwise we wrongly
-// block native playback on MSE-less browsers (e.g. iOS Safari playing an mp4).
-const MSE_REQUIRED_TYPES: string[] = ['mse', 'mpegts', 'm2ts', 'flv'];
+// PlayerEngine — the framework-agnostic module that owns the whole mpegts.js
+// lifecycle (config merge, MSE gate, gen guard, 重建 debounce, Live 重连,
+// event mapping, autoplay fallback, destroy sequence). This component is just
+// the Vue adapter: props → engine.update(), engine handlers → emits.
+import { createPlayerEngine, type PlayerEngine } from '../../../core/src/index';
 
 interface Props {
   url: string;
@@ -75,49 +59,47 @@ const emit = defineEmits<{
 
 const videoRef = ref<HTMLVideoElement>() as Ref<HTMLVideoElement>;
 const status = ref<PlayerStatus>('nosignal');
-let player: Mpegts.Player | null = null;
-// ponytail: generation guard — bump on every destroy so in-flight autoplay
-// promise callbacks bail instead of writing stale status / resurrecting a
-// dead player. One variable kills the whole stale-closure class (P0-3).
-let gen = 0;
-let recreateTimer: ReturnType<typeof setTimeout> | null = null;
+let engine: PlayerEngine | null = null;
 
-// Collapse rapid prop mutations (e.g. dragging a config slider) into a single
-// recreate — deep watcher fires per field, this debounces to one rebuild (P0-1).
-function scheduleRecreate() {
-  if (recreateTimer) clearTimeout(recreateTimer);
-  recreateTimer = setTimeout(() => {
-    recreateTimer = null;
-    createPlayer();
-  }, 300);
+// Full snapshot on every call — the engine diffs create-affecting keys itself,
+// so this is safe to run on any prop change. Handlers are passed fresh each
+// time and re-read at dispatch.
+function collectOptions() {
+  return {
+    video: videoRef.value as HTMLVideoElement,
+    url: props.url,
+    autoplay: props.autoplay,
+    isLive: props.isLive,
+    muted: props.muted,
+    type: props.type,
+    cors: props.cors,
+    withCredentials: props.withCredentials,
+    hasAudio: props.hasAudio,
+    hasVideo: props.hasVideo,
+    duration: props.duration,
+    filesize: props.filesize,
+    config: props.config,
+    autoReconnect: props.autoReconnect,
+    reconnect: props.reconnect,
+    handlers: {
+      onStatus: (s: PlayerStatus) => {
+        status.value = s;
+        emit('status', s);
+      },
+      onError: (errorType: string, errorDetail: string, errorInfo: unknown) => emit('error', errorType, errorDetail, errorInfo),
+      onStatistics: (info: StatisticsInfo) => emit('statistics', info),
+      onMediaInfo: (info: MediaInfo) => emit('mediaInfo', info),
+      onRecovered: () => emit('recovered'),
+      onEnded: () => emit('ended'),
+    },
+  };
 }
 
-// mpegts.js auto-reconnects VOD internally but for live it throws
-// UnrecoverableEarlyEof to the upper layer — so the wrapper owns live reconnect.
-// Backoff caps retries; the burst resets on successful playback (markPlaying).
-const RECONNECTABLE_ERRORS = new Set(['Exception', 'ConnectingTimeout', 'UnrecoverableEarlyEof']);
-let reconnectAttempts = 0;
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-
-function markPlaying() {
-  reconnectAttempts = 0;
-  status.value = 'playing';
-  emit('status', 'playing');
-}
-
-function scheduleReconnect(): boolean {
-  const { retries = 5, minDelay = 1000, maxDelay = 16000 } = props.reconnect;
-  if (reconnectAttempts >= retries) return false;
-  const delay = Math.min(maxDelay, minDelay * 2 ** reconnectAttempts);
-  reconnectAttempts++;
-  status.value = 'reconnecting';
-  emit('status', 'reconnecting');
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    createPlayer();
-  }, delay);
-  return true;
-}
+// One watcher for every prop (deep covers `config`); the engine decides
+// rebuild vs muted-sync vs no-op.
+watch(props, () => {
+  engine?.update(collectOptions());
+}, { deep: true });
 
 const videoStyle = computed<CSSProperties>(() => ({
   position: 'absolute',
@@ -168,92 +150,43 @@ function ensureKeyframe() {
   document.head.appendChild(el);
 }
 
-function destroyPlayer(silent = false) {
-  gen++;
-  if (recreateTimer) {
-    clearTimeout(recreateTimer);
-    recreateTimer = null;
-  }
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-  if (!player) return;
-  try {
-    player.pause();
-    player.unload();
-    player.detachMediaElement();
-    player.destroy();
-  } catch {
-    // ignore cleanup errors
-  }
-  player = null;
-  if (!silent) {
-    status.value = 'nosignal';
-    emit('status', 'nosignal');
-  }
-}
-
 function play() {
-  if (!player) return;
-  const myGen = gen;
-  // Re-sync muted on resume (pause() intentionally leaves it untouched).
-  videoRef.value.muted = props.muted;
-  const result = player.play();
-  if (result instanceof Promise) {
-    result
-      .then(() => {
-        if (myGen !== gen) return;
-        markPlaying();
-      })
-      .catch(() => {
-        if (myGen !== gen) return;
-        status.value = 'stopped';
-        emit('status', 'stopped');
-      });
-  } else {
-    markPlaying();
-  }
+  engine?.play();
 }
 
 function pause() {
-  if (!player) return;
-  player.pause();
-  status.value = 'stopped';
-  emit('status', 'stopped');
+  engine?.pause();
 }
 
 function reload() {
-  createPlayer();
+  engine?.reload();
 }
 
 function setMuted(muted: boolean) {
-  if (videoRef.value) videoRef.value.muted = muted;
+  engine?.setMuted(muted);
 }
 
 function getPlayer(): Mpegts.Player | null {
-  return player;
+  return (engine?.getPlayer() as Mpegts.Player | null) ?? null;
 }
 
 function getVolume(): number {
-  return videoRef.value?.volume ?? 0;
+  return engine?.getVolume() ?? 0;
 }
 function setVolume(volume: number) {
-  if (videoRef.value) videoRef.value.volume = volume;
+  engine?.setVolume(volume);
 }
 function seek(seconds: number) {
-  // player.currentTime setter routes through mpegts.js (triggers range-load),
-  // not a bare <video> assign which would bypass segment loading for VOD.
-  if (player) player.currentTime = seconds;
+  engine?.seek(seconds);
 }
 function getCurrentTime(): number {
-  return videoRef.value?.currentTime ?? 0;
+  return engine?.getCurrentTime() ?? 0;
 }
 function getBufferedRanges(): TimeRanges | null {
-  return videoRef.value?.buffered ?? null;
+  return engine?.getBufferedRanges() ?? null;
 }
 function getStatistics(): StatisticsInfo | null {
-  return (player?.statisticsInfo as StatisticsInfo | undefined) ?? null;
+  return engine?.getStatistics() ?? null;
 }
 
 defineExpose({
@@ -270,180 +203,15 @@ defineExpose({
   getStatistics,
 });
 
-function buildMediaDataSource(): MediaDataSource {
-  const source: MediaDataSource = {
-    type: props.type ?? 'mse',
-    isLive: props.isLive,
-    url: props.url,
-  };
-  if (props.cors !== undefined) source.cors = props.cors;
-  if (props.withCredentials !== undefined) source.withCredentials = props.withCredentials;
-  // 默认 hasAudio/hasVideo: true，避免某些 FLV 流（如 ZLMediaKit）
-  // 的 header flag 未标记音/视频导致对应包被丢弃（表现为黑屏/无声）
-  source.hasAudio = props.hasAudio;
-  source.hasVideo = props.hasVideo;
-  if (props.duration !== undefined) source.duration = props.duration;
-  if (props.filesize !== undefined) source.filesize = props.filesize;
-  return source;
-}
-
-function createPlayer() {
-  destroyPlayer(true);
-  const myGen = gen;
-
-  if (!props.url || !videoRef.value) return;
-  if (MSE_REQUIRED_TYPES.includes(props.type) && !Mpegts.isSupported()) {
-    status.value = 'error';
-    emit('status', 'error');
-    emit('error', 'NotSupportedError', 'MediaSource Extensions (MSE) are not supported by this browser', { type: props.type });
-    return;
-  }
-
-  status.value = 'connecting';
-  emit('status', 'connecting');
-
-  const mergedConfig: MpegtsConfig = { ...DEFAULT_CONFIG, ...props.config };
-  const mediaSource = buildMediaDataSource();
-
-  player = Mpegts.createPlayer(mediaSource, mergedConfig);
-
-  player.attachMediaElement(videoRef.value);
-
-  player.on(
-    Mpegts.Events.ERROR,
-    (errorType: string, errorDetail: string, errorInfo: any) => {
-      if (myGen !== gen) return;
-      emit('error', errorType, errorDetail, errorInfo);
-      if (
-        props.autoReconnect &&
-        errorType === 'NetworkError' &&
-        RECONNECTABLE_ERRORS.has(errorDetail) &&
-        scheduleReconnect()
-      ) {
-        return; // reconnect scheduled — not a terminal error
-      }
-      status.value = 'error';
-      emit('status', 'error');
-    },
-  );
-
-  player.on(Mpegts.Events.STATISTICS_INFO, (info: StatisticsInfo) => {
-    if (myGen !== gen) return;
-    emit('statistics', info);
-  });
-  player.on(Mpegts.Events.MEDIA_INFO, (info: MediaInfo) => {
-    if (myGen !== gen) return;
-    emit('mediaInfo', info);
-  });
-  player.on(Mpegts.Events.RECOVERED_EARLY_EOF, () => {
-    if (myGen !== gen) return;
-    emit('recovered');
-  });
-  player.on(Mpegts.Events.LOADING_COMPLETE, () => {
-    if (myGen !== gen) return;
-    emit('ended');
-  });
-
-  player.load();
-
-  if (props.autoplay) {
-    videoRef.value.muted = props.muted;
-    const result = player.play();
-    if (result instanceof Promise) {
-      result
-        .then(() => {
-          if (myGen !== gen) return;
-          markPlaying();
-        })
-        .catch(() => {
-          // 浏览器自动播放策略拦截了带声音的播放，降级为静音重试
-          // （与 video.js 的 manualAutoplay_("any") 行为保持一致）
-          if (myGen !== gen) return;
-          if (!props.muted && videoRef.value && player) {
-            videoRef.value.muted = true;
-            const fallbackResult = player.play();
-            if (fallbackResult instanceof Promise) {
-              fallbackResult
-                .then(() => {
-                  if (myGen !== gen) return;
-                  markPlaying();
-                })
-                .catch(() => {
-                  if (myGen !== gen) return;
-                  status.value = 'stopped';
-                  emit('status', 'stopped');
-                });
-            } else {
-              markPlaying();
-            }
-          } else {
-            status.value = 'stopped';
-            emit('status', 'stopped');
-          }
-        });
-    } else {
-      markPlaying();
-    }
-  }
-}
-
-watch(
-  () => props.url,
-  (newUrl) => {
-    if (newUrl) {
-      scheduleRecreate();
-    } else {
-      destroyPlayer();
-    }
-  },
-);
-
-watch(
-  () => props.config,
-  () => {
-    if (props.url) {
-      scheduleRecreate();
-    }
-  },
-  { deep: true },
-);
-
-watch(
-  () => [
-    props.type,
-    props.isLive,
-    props.cors,
-    props.withCredentials,
-    props.hasAudio,
-    props.hasVideo,
-    props.duration,
-    props.filesize,
-  ],
-  () => {
-    if (props.url) {
-      scheduleRecreate();
-    }
-  },
-);
-
 onMounted(() => {
   ensureKeyframe();
-  if (props.url) {
-    createPlayer();
-  }
+  // Constructing with a url creates immediately (mount parity).
+  engine = createPlayerEngine(collectOptions());
 });
 
-watch(
-  () => props.muted,
-  (val) => {
-    if (videoRef.value) {
-      videoRef.value.muted = val;
-    }
-  },
-);
-
 onUnmounted(() => {
-  destroyPlayer();
+  engine?.destroy();
+  engine = null;
 });
 </script>
 
