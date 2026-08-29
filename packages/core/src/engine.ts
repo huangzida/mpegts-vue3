@@ -227,6 +227,11 @@ export function createPlayerEngine(
   }
 
   function createPlayer() {
+    // Consume the cold start on entry — even when the url/video guard or the
+    // MSE gate bails below, later update()s must flow through the diff +
+    // debounce path instead of re-entering createPlayer (and re-emitting
+    // NotSupportedError) on every single call.
+    created = true
     destroyPlayer(true)
     const myGen = gen
 
@@ -277,7 +282,6 @@ export function createPlayerEngine(
     })
 
     player.load()
-    created = true
 
     if (opts.autoplay) {
       playOnce(() => {
@@ -347,7 +351,7 @@ export function createPlayerEngine(
 
   return {
     update,
-    destroy: () => destroyPlayer(),
+    destroy: (silent = false) => destroyPlayer(silent),
     play: () => playOnce(() => handlers?.onStatus?.('stopped')),
     pause: () => {
       if (!player) return

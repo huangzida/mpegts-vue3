@@ -99,6 +99,35 @@ describe('PlayerEngine', () => {
     engine.destroy();
   });
 
+  it('MSE gate failure consumes the cold start — repeated updates do not re-emit', async () => {
+    vi.useFakeTimers();
+    recorder.isSupported = false;
+    const { engine, calls, updateOpts } = makeEngine();
+    expect(calls.errors).toHaveLength(1);
+    expect(calls.status.filter((s) => s === 'error')).toHaveLength(1);
+
+    // identical-source updates: no re-entry into createPlayer, no error spam
+    engine.update(updateOpts({}));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(calls.errors).toHaveLength(1);
+    expect(calls.status.filter((s) => s === 'error')).toHaveLength(1);
+
+    // a real source change flows through the debounced rebuild → gate fails once more
+    engine.update(updateOpts({ url: 'ws://x/other.flv' }));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(calls.errors).toHaveLength(2);
+    engine.destroy();
+  });
+
+  it('destroy(silent) tears down without the trailing nosignal (React unmount parity)', () => {
+    const { engine, calls } = makeEngine({ autoplay: false });
+    const p = recorder.players[0];
+    p.calls.length = 0;
+    engine.destroy(true);
+    expect(p.calls).toEqual(['pause', 'unload', 'detachMediaElement', 'destroy']);
+    expect(calls.status.includes('nosignal')).toBe(false);
+  });
+
   it('destroy: cleanup order pause→unload→detach→destroy + nosignal; idempotent', () => {
     const { engine, calls } = makeEngine();
     const p = recorder.players[0];

@@ -128,7 +128,8 @@ export const MpegtsPlayer = forwardRef<MpegtsPlayerRef, MpegtsPlayerProps>(
       // Constructing with a url creates immediately (mount parity).
       engineRef.current = createPlayerEngine(collect())
       return () => {
-        engineRef.current?.destroy()
+        // Silent: old React never called onStatus during unmount.
+        engineRef.current?.destroy(true)
         engineRef.current = null
       }
       // Mount/unmount only: every render below flows through engine.update().

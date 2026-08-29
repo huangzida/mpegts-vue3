@@ -89,7 +89,8 @@ export interface PlayerEngine {
    * so calling this on every render/tick is safe and cheap.
    */
   update(options: PlayerEngineOptions): void
-  destroy(): void
+  /** `silent` skips the trailing nosignal status (React unmount parity). */
+  destroy(silent?: boolean): void
   play(): void
   pause(): void
   reload(): void
