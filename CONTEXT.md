@@ -17,7 +17,7 @@ source 或 config 变化后的 destroy/create 循环；策略默认 300ms 防抖
 _Avoid_: recreate, 重启
 
 **Live 重连**:
-直播流瞬态网络错误后的自动重试状态机：指数退避、次数上限、播放成功即复位；HTTP 4xx/5xx 视为永久错误不重试。
+直播流瞬态错误或服务端干净关闭（LOADING_COMPLETE）后的自动重试状态机：指数退避 1s→16s、默认无次数上限、播放成功即复位；HTTP 4xx/5xx 视为永久错误不重试。
 _Avoid_: retry, 自动恢复
 
 **保守音轨默认**:

@@ -45,7 +45,8 @@ const props = withDefaults(defineProps<Props>(), {
   showLoading: true,
   config: () => ({}),
   autoReconnect: true,
-  reconnect: () => ({ retries: 5, minDelay: 1000, maxDelay: 16000 }),
+  // reconnect 默认值由 PlayerEngine 提供（retries 无限 + 1s→16s 退避），
+  // 适配层不再重复一份，避免两处默认值漂移。
 });
 
 const emit = defineEmits<{

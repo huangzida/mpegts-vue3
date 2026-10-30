@@ -73,6 +73,10 @@ describe('PlayerEngine', () => {
     const cfg = recorder.players[0].config;
     expect(cfg.enableStashBuffer).toBe(true); // user override
     expect(cfg.liveSync).toBe(true); // default still present
+    // Defaults the library ships on purpose (regression guard):
+    expect(cfg.enableWorkerForMSE).toBe(true); // MSE pipeline off the main thread
+    expect(cfg.liveSyncMaxLatency).toBe(0.7); // 1.2 left a never-converging dead band
+    expect(cfg.liveSyncTargetLatency).toBe(0.3);
     engine.destroy();
   });
 
@@ -309,6 +313,39 @@ describe('PlayerEngine', () => {
     recorder.players[2].fire('error', 'NetworkError', 'UnrecoverableEarlyEof', {});
     expect(recorder.players).toHaveLength(3); // initial + 2 reconnects
     expect(calls.status.at(-1)).toBe('error'); // 3rd error → exhausted → terminal
+    engine.destroy();
+  });
+
+  it('default retries are unlimited (survives the old 5-attempt cap)', async () => {
+    vi.useFakeTimers();
+    const { engine } = makeEngine();
+    for (let i = 0; i < 7; i++) {
+      recorder.players[recorder.players.length - 1].fire('error', 'NetworkError', 'Exception', {});
+      await vi.advanceTimersByTimeAsync(16000); // ≥ maxDelay, always enough
+    }
+    expect(recorder.players).toHaveLength(8); // initial + 7 reconnects
+    engine.destroy();
+  });
+
+  it('live clean close (LOADING_COMPLETE) → onEnded + auto-reconnect', async () => {
+    vi.useFakeTimers();
+    const { engine, calls } = makeEngine();
+    recorder.players[0].fire('loading_complete');
+    expect(calls.ended).toBe(1);
+    expect(calls.status).toContain('reconnecting');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(recorder.players).toHaveLength(2);
+    engine.destroy();
+  });
+
+  it('VOD end (LOADING_COMPLETE) → onEnded only, never reconnects', async () => {
+    vi.useFakeTimers();
+    const { engine, calls } = makeEngine({ isLive: false });
+    recorder.players[0].fire('loading_complete');
+    expect(calls.ended).toBe(1);
+    expect(calls.status).not.toContain('reconnecting');
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(recorder.players).toHaveLength(1);
     engine.destroy();
   });
 

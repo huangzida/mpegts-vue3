@@ -18,6 +18,10 @@ import { mpegtsFactory } from './factory'
 // default; omit the key.
 const DEFAULT_CONFIG: MpegtsConfig = {
   enableWorker: true,
+  // Chromium 108+: moves the whole MSE pipeline (MediaSource + SourceBuffer
+  // appends) into the same worker as the transmuxer. Auto-detected and falls
+  // back to the main-thread engine on other kernels, so it is safe by default.
+  enableWorkerForMSE: true,
   reuseRedirectedURL: true,
   enableStashBuffer: false,
   liveBufferLatencyChasing: true,
@@ -25,8 +29,11 @@ const DEFAULT_CONFIG: MpegtsConfig = {
   liveBufferLatencyMaxLatency: 1.5,
   liveBufferLatencyMinRemain: 0.3,
   liveSync: true,
-  liveSyncMaxLatency: 1.2,
-  liveSyncTargetLatency: 0.5,
+  // mpegts.js/mpegts-react shipped 1.2/0.5, which leaves a dead band: between
+  // 0.5s and 1.2s neither the chaser nor liveSync acts, so the buffer parks at
+  // ~1s forever. 0.7/0.3 converges to 0.3-0.5s (measured p50 0.71s → 0.30s).
+  liveSyncMaxLatency: 0.7,
+  liveSyncTargetLatency: 0.3,
   autoCleanupSourceBuffer: true,
   autoCleanupMaxBackwardDuration: 30,
   autoCleanupMinBackwardDuration: 10,
@@ -188,9 +195,11 @@ export function createPlayerEngine(
   }
 
   // Live 重连: exponential backoff, capped; the burst resets on successful
-  // playback (markPlaying). Returns false when retries are exhausted.
+  // playback (markPlaying). Retries are unlimited by default — a live source
+  // that comes back hours later still recovers — capped by the 16s delay, and
+  // the caller can bound it with `reconnect: { retries: 5 }`.
   function scheduleReconnect(): boolean {
-    const { retries = 5, minDelay = 1000, maxDelay = 16000 } = opts.reconnect ?? {}
+    const { retries = Infinity, minDelay = 1000, maxDelay = 16000 } = opts.reconnect ?? {}
     if (reconnectAttempts >= retries) return false
     const delay = Math.min(maxDelay, minDelay * 2 ** reconnectAttempts)
     reconnectAttempts++
@@ -279,6 +288,11 @@ export function createPlayerEngine(
     player.on(PLAYER_EVENTS.LOADING_COMPLETE, () => {
       if (myGen !== gen) return
       handlers?.onEnded?.()
+      // A live stream closed by the server arrives here as a clean completion
+      // with no error (mpegts.js never errors on ws close) — without a retry the
+      // picture freezes on the last frame forever. VOD ends normally, so only
+      // live streams reconnect.
+      if (opts.autoReconnect && opts.isLive) scheduleReconnect()
     })
 
     player.load()

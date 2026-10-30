@@ -52,6 +52,6 @@ Requires **Node >=18** and **pnpm@9.15.4** (`packageManager` is pinned).
 
 ## Constraints worth knowing
 
-- `enableWorker: true`, `enableStashBuffer: false`, `liveSyncTargetLatency: 0.5`, `reuseRedirectedURL: true` are the load-bearing low-latency defaults. `config` is **shallow-merged** over them (`{ ...DEFAULT_CONFIG, ...config }`) — passing `undefined` does not unset a default; omit the key.
+- `enableWorker: true`, `enableWorkerForMSE: true`, `enableStashBuffer: false`, `liveSyncMaxLatency: 0.7` / `liveSyncTargetLatency: 0.3`, `reuseRedirectedURL: true` are the load-bearing low-latency defaults. `config` is **shallow-merged** over them (`{ ...DEFAULT_CONFIG, ...config }`) — passing `undefined` does not unset a default; omit the key.
 - `hasAudio` / `hasVideo` default to `true` (not from mpegts.js) to avoid FLV header-flag false negatives dropping packets.
-- The live auto-reconnect logic is owned by these wrappers (mpegts.js only auto-reconnects VOD). HTTP 4xx/5xx are treated as permanent and not retried.
+- The live auto-reconnect logic is owned by these wrappers (mpegts.js only auto-reconnects VOD). HTTP 4xx/5xx are treated as permanent and not retried; retries are unlimited by default (1s→16s backoff) and a cleanly closed live stream (`LOADING_COMPLETE`) is retried too — VOD end is not.

@@ -17,12 +17,12 @@ This monorepo contains two packages:
 
 **Performance**
 - Web Worker transmuxing on by default (`enableWorker`) — FLV remuxing off the main thread; the biggest lever for multi-view dashboards
-- Low-latency live tuning out of the box (`enableStashBuffer: false`, `liveSyncTargetLatency: 0.5`) for sub-second latency
-- Optional MSE-in-worker on Chrome (`enableWorkerForMSE`) — moves the entire MediaSource pipeline into a worker
+- MSE-in-worker on by default (`enableWorkerForMSE`) — on Chromium 108+ the whole MediaSource pipeline (incl. `SourceBuffer` appends) runs in the worker too; capability is auto-detected and falls back to the main-thread engine everywhere else
+- Low-latency live tuning out of the box (`enableStashBuffer: false`, `liveSyncMaxLatency: 0.7` / `liveSyncTargetLatency: 0.3`) — sub-second latency, measured p50 buffer latency 0.30 s (vs 0.71 s for the previous 1.2/0.5 defaults)
 - CDN redirect reuse (`reuseRedirectedURL`) — reuses 301/302 across seek/reconnect, pure upside for HTTP live-FLV
 
 **Resilience**
-- Live auto-reconnect with exponential backoff — mpegts.js only auto-reconnects VOD; this wrapper owns live reconnect (emits `reconnecting`, skips permanent HTTP errors)
+- Live auto-reconnect with exponential backoff — mpegts.js only auto-reconnects VOD; this wrapper owns live reconnect (emits `reconnecting`, skips permanent HTTP errors, and treats a server-closed live stream as retryable instead of freezing on the last frame)
 - VOD early-EOF self-heal, surfaced via `onRecovered`
 
 **Observability**
@@ -141,18 +141,18 @@ Both Vue 3 and React components share the same props interface:
 | `filesize` | `number` | — | Total file size in bytes |
 | `showLoading` | `boolean` | `true` | Show the "Connecting..." loading overlay (spinner + text) while connecting to the stream |
 | `config` | `Partial<MpegtsConfig>` | `{}` | mpegts.js player config. See [mpegts.js API](https://github.com/xqq/mpegts.js/blob/master/docs/api.md) |
-| `autoReconnect` | `boolean` | `true` | Auto-reconnect on transient live network errors (mpegts.js only auto-reconnects VOD). Exponential backoff up to `reconnect.retries`. |
-| `reconnect` | `{ retries?, minDelay?, maxDelay? }` | `{ retries: 5, minDelay: 1000, maxDelay: 16000 }` | Reconnect backoff tuning (ms). delay = `min(maxDelay, minDelay * 2^attempt)`. |
+| `autoReconnect` | `boolean` | `true` | Auto-reconnect on transient live errors and on a server-closed live stream (mpegts.js only auto-reconnects VOD). Exponential backoff, unlimited attempts by default. |
+| `reconnect` | `{ retries?, minDelay?, maxDelay? }` | `{ retries: Infinity, minDelay: 1000, maxDelay: 16000 }` | Reconnect backoff tuning (ms). delay = `min(maxDelay, minDelay * 2^attempt)`. Pass `retries` to cap the attempts (e.g. `{ retries: 5 }`). |
 
 ### Config merge
 
-`config` is shallow-merged with the package's low-latency live defaults: `{ ...DEFAULT_CONFIG, ...config }`. Your `config` overrides matching top-level keys; keys you don't set keep their defaults. There is no way to "unset" a default by passing `undefined` — omit the key to keep the default, or pass an explicit value to override. `config` is treated as create-time: changing it after mount debounces a player rebuild (~300 ms). Notable defaults: **`enableWorker: true`** (transmuxing off the main thread — the biggest perf lever for multi-view; pass `false` under CSP/no-Worker constraints), `enableStashBuffer: false`, `liveSyncTargetLatency: 0.5`, **`reuseRedirectedURL: true`** (reuse CDN 301/302 redirects across seek/reconnect — pure upside for HTTP live-FLV).
+`config` is shallow-merged with the package's low-latency live defaults: `{ ...DEFAULT_CONFIG, ...config }`. Your `config` overrides matching top-level keys; keys you don't set keep their defaults. There is no way to "unset" a default by passing `undefined` — omit the key to keep the default, or pass an explicit value to override. `config` is treated as create-time: changing it after mount debounces a player rebuild (~300 ms). Notable defaults: **`enableWorker: true`** (transmuxing off the main thread — the biggest perf lever for multi-view; pass `false` under CSP/no-Worker constraints), **`enableWorkerForMSE: true`** (MSE pipeline in the worker on Chromium 108+, auto-falls-back elsewhere), `enableStashBuffer: false`, `liveSyncMaxLatency: 0.7` / `liveSyncTargetLatency: 0.3`, **`reuseRedirectedURL: true`** (reuse CDN 301/302 redirects across seek/reconnect — pure upside for HTTP live-FLV).
 
 ### Notes
 
-- **Latency**: defaults (`enableStashBuffer: false`, `liveSyncTargetLatency: 0.5`, `liveBufferLatencyChasing: true`) target sub-second live latency. On lossy networks this can cause stalls — raise `liveSyncTargetLatency` / enable `enableStashBuffer` via `config` if you need stability over latency.
-- **Auto-reconnect**: on transient live network errors (`ConnectingTimeout`, `UnrecoverableEarlyEof`, `Exception`) the player retries with exponential backoff (default 5 tries, 1s→16s), emitting a `reconnecting` status. HTTP status errors (4xx/5xx) are **not** retried (permanent). Disable with `autoReconnect={false}`.
-- **Performance tuning**: `enableWorker: true` is on by default (transmuxing in a Web Worker). For maximum offloading on Chrome, set `config: { enableWorkerForMSE: true }` to move the entire MSE pipeline (incl. `MediaSource`/`SourceBuffer`) into a worker — capability is auto-detected and falls back gracefully on unsupported browsers. Statistics fire every `statisticsInfoReportInterval` (default 600 ms) — raise it under heavy multi-view to cut reactivity load, or use the `getStatistics()` ref method to pull on demand.
+- **Latency**: defaults (`enableStashBuffer: false`, `liveSyncMaxLatency: 0.7` / `liveSyncTargetLatency: 0.3`, `liveBufferLatencyChasing: true`) target sub-second live latency and converge to ~0.3–0.5 s of playback buffer. On lossy networks that headroom can cause stalls — raise `liveSyncMaxLatency` / `liveBufferLatencyMinRemain` or enable `enableStashBuffer` via `config` if you need stability over latency.
+- **Auto-reconnect**: on transient live errors (`ConnectingTimeout`, `UnrecoverableEarlyEof`, `Exception`) **and** on a live stream the server closed cleanly (`LOADING_COMPLETE` — otherwise the picture would freeze on the last frame forever) the player retries with exponential backoff (1s→16s, unlimited attempts by default), emitting a `reconnecting` status. HTTP status errors (4xx/5xx) are **not** retried (permanent). Cap the attempts with `reconnect={{ retries: 5 }}`, or disable with `autoReconnect={false}`. VOD playback end is never retried.
+- **Performance tuning**: `enableWorker: true` (transmuxing in a Web Worker) and `enableWorkerForMSE: true` (MSE pipeline — `MediaSource`/`SourceBuffer` appends — also in a worker on Chromium 108+, auto-detected, falls back elsewhere) are both on by default. Pass `config: { enableWorkerForMSE: false }` if you need the main-thread engine (e.g. debugging `SourceBuffer` state in the console). Statistics fire every `statisticsInfoReportInterval` (default 600 ms) — raise it under heavy multi-view to cut reactivity load, or use the `getStatistics()` ref method to pull on demand.
 - **`type` and MSE**: types `mse` / `mpegts` / `m2ts` / `flv` route through mpegts.js's MSE path and require `MediaSource Extensions`. Any other `type` (e.g. `mp4`) uses native `<video>` playback and works on browsers without MSE (e.g. iOS Safari). FLV **cannot** play on MSE-less browsers — there is no software-decode fallback.
 - **SSR / client-only**: the component imports `mpegts.js`, which touches `window` at module load, so it is **client-only**. In Nuxt wrap with `<ClientOnly>`; in Next.js use `next/dynamic(() => import(...), { ssr: false })`.
 
@@ -165,7 +165,7 @@ Both Vue 3 and React components share the same props interface:
 | `onStatistics` / `@statistics` | `(info: StatisticsInfo)` | mpegts.js telemetry (speed KB/s, decoded/dropped frames, segment counts) every ~600 ms |
 | `onMediaInfo` / `@mediaInfo` | `(info: MediaInfo)` | Resolved media info (resolution, fps, codecs, bitrate) — fires once when known |
 | `onRecovered` / `@recovered` | `()` | Stream self-healed after an early-EOF (mpegts.js internal VOD reconnect) |
-| `onEnded` / `@ended` | `()` | VOD playback reached end-of-stream (`LOADING_COMPLETE`) |
+| `onEnded` / `@ended` | `()` | Stream reached end-of-stream (`LOADING_COMPLETE`): VOD finished, or a live stream the server closed (live also auto-reconnects afterwards when `autoReconnect` is on) |
 
 ### Ref Methods
 
